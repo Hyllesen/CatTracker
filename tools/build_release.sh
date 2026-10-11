@@ -18,8 +18,11 @@ OUT="$APP/android/app/build/outputs/apk/release/app-release.apk"
 DEST="$ROOT/catracker-release.apk"
 
 INSTALL=0
+TARGET=""
 if [[ "${1:-}" == "--install" ]]; then
   INSTALL=1
+  # Optional serial, for when more than one phone is plugged in.
+  TARGET="${2:-}"
 fi
 
 if [[ ! -f "$APP/android/keystore.properties" ]]; then
@@ -45,11 +48,40 @@ echo "==> APK: $DEST"
 ls -lh "$DEST" | awk '{print "    size: " $5}'
 
 if [[ "$INSTALL" == "1" ]]; then
-  DEV="$(adb devices | awk 'NR>1 && $2=="device" {print $1; exit}')"
-  if [[ -z "$DEV" ]]; then
-    echo "error: no adb device connected" >&2
-    exit 1
+  # Skipped rather than used: emulators have a virtual Bluetooth radio and
+  # cannot see the handheld, so an install that lands on one looks broken for
+  # reasons unrelated to the build. Bash 3.2 compatible - no mapfile.
+  CANDIDATES=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && CANDIDATES+=("$line")
+  done < <(adb devices | awk 'NR>1 && $2=="device" {print $1}' | grep -v '^emulator-')
+
+  case "${#CANDIDATES[@]}" in
+    0)
+      echo "error: no physical device connected (emulators are skipped)." >&2
+      echo "       Plug in the phone and enable USB debugging." >&2
+      exit 1
+      ;;
+    1)
+      DEV="${CANDIDATES[0]}"
+      ;;
+    *)
+      echo "error: several physical devices connected:" >&2
+      printf '         %s\n' "${CANDIDATES[@]}" >&2
+      echo "       Re-run with: tools/build_release.sh --install <serial>" >&2
+      exit 1
+      ;;
+  esac
+
+  # An explicit serial wins over auto-detection, but still has to be real.
+  if [[ -n "$TARGET" ]]; then
+    if ! printf '%s\n' "${CANDIDATES[@]}" | grep -qx "$TARGET"; then
+      echo "error: '$TARGET' is not a connected physical device." >&2
+      exit 1
+    fi
+    DEV="$TARGET"
   fi
+
   echo "==> installing on $DEV"
   adb -s "$DEV" install -r "$DEST"
   # Release builds carry the JS bundle, so no Metro tunnel is needed. Removing
