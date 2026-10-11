@@ -93,7 +93,11 @@ def main():
                 rssi = float(m.group(1))
                 snr = float(m.group(2))
                 seen.append(rssi)
-                print(f"{rssi:6.1f} dBm   snr {snr:5.1f}   avg {sum(seen)/len(seen):6.1f}")
+                print(
+                    f"{rssi:6.1f} dBm   snr {snr:5.1f}   "
+                    f"avg {sum(seen)/len(seen):6.1f}   "
+                    f"spread {max(seen) - min(seen):4.1f}"
+                )
     except KeyboardInterrupt:
         pass
     finally:
