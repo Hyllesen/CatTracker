@@ -70,13 +70,16 @@ export function playToneStep(step: number): void {
     return;
   }
 
-  // A tone still sounding from the previous beacon would otherwise resume
-  // mid-blip instead of restarting, which reads as a glitch rather than a
-  // repeat when the signal is changing quickly.
-  if (sound.isPlaying()) {
-    sound.stop();
-  }
-  sound.play();
+  // Always stop before playing. react-native-sound's native play() calls
+  // MediaPlayer.start() with no rewind, so once a tone has finished the player
+  // sits in PlaybackCompleted - and start() there is a silent no-op. Without
+  // this, only the very first beep of a session would ever be heard.
+  //
+  // Guarding on isPlaying() is not enough: the library clears its _playing
+  // flag on completion, so it reports false precisely when the player is in
+  // the stuck state. stop() puts the player back into a state where start()
+  // plays from the beginning.
+  sound.stop(() => sound.play());
 }
 
 export function setTonesEnabled(value: boolean): void {

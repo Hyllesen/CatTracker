@@ -19,7 +19,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import {Device} from 'react-native-ble-plx';
+import {Device, Subscription} from 'react-native-ble-plx';
 import {
   SafeAreaProvider,
   useSafeAreaInsets,
@@ -139,8 +139,13 @@ function Tracker() {
   const [rec, setRec] = useState({on: false, rows: 0, secs: 0});
   const [csvNote, setCsvNote] = useState<string | null>(null);
   const deviceRef = useRef<Device | null>(null);
+  const subRef = useRef<Subscription | null>(null);
 
   const stop = useCallback(async () => {
+    if (subRef.current) {
+      subRef.current.remove();
+      subRef.current = null;
+    }
     if (deviceRef.current) {
       await disconnect(deviceRef.current);
       deviceRef.current = null;
@@ -150,6 +155,14 @@ function Tracker() {
   }, []);
 
   const start = useCallback(async () => {
+    // Already connected. A connected peripheral stops advertising, so a second
+    // scan cannot find it - and starting a device scan while a GATT client is
+    // live can tear the existing connection down. Ignore the tap instead of
+    // reporting a failure the user can do nothing about.
+    if (subRef.current) {
+      return;
+    }
+
     setError(null);
 
     if (!(await isBluetoothEnabled())) {
@@ -180,7 +193,7 @@ function Tracker() {
 
       setStatus('connecting');
       deviceRef.current = device;
-      await connectAndSubscribe(device, s => {
+      subRef.current = await connectAndSubscribe(device, s => {
         setSignal(s);
         setStatus('ready');
         // The handheld also publishes on receive timeout, so the stream
