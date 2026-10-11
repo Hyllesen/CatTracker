@@ -209,7 +209,12 @@ def main():
                     marker_no += 1
                     s_now = stats(window)
                     print("\n" + fmt(s_now, f"marker {marker_no}:"))
-                    f.write(f"# MARKER {marker_no} {s_now and s_now['avg']:.1f}\n")
+                    # Pressing m before the first packet lands is easy to do -
+                    # the keys line is printed as soon as the port opens.
+                    # `s_now and s_now['avg']` short-circuits to None here and
+                    # then crashes on the format spec.
+                    avg_text = f"{s_now['avg']:.1f}" if s_now else "no-samples"
+                    f.write(f"# MARKER {marker_no} {avg_text}\n")
                     f.write(
                         f"{elapsed_ms()},{NO_DATA:.1f},"
                         f"{NO_DATA:.1f},{FLAG_MARKER | FLAG_FRESH},{NO_DATA:.1f}\n"

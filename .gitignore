@@ -4,5 +4,11 @@
 #     tools/build_release.sh --install
 *.apk
 
+# Antenna/range test logs produced by tools/log_dbm.py and the handheld's own
+# walk-test dump. Newest-first timestamps make each run unique; they are data
+# from a session, not source.
+antenna-test-*.csv
+walk-*.csv
+
 # macOS
 .DS_Store
