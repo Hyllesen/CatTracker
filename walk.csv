@@ -1,0 +1,169 @@
+port: /dev/cu.usbmodem111301
+sending: 'd'
+ESP-ROM:esp32c3-api1-20210207
+Build:Feb  7 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0xd (SPI_FAST_FLASH_BOOT)
+Saved PC:0x4038783c
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fcd5820,len:0x110c
+load:0x403cbf10,len:0xb54
+load:0x403ce710,len:0x2f9c
+entry 0x403cbf10
+
+=====================================
+ Cat Tracker - Handheld Homing Device
+ ESP32-C3 + RA-02 (SX1278 433MHz)
+=====================================
+Radio online. Freq=433.0MHz SF9 sync=0x12
+Stored records: 66
+Commands: d=dump  c=clear  r=registers  w=arm walk-test
+Listening for collar pings...
+
+[+] pkt #1  payload=CAT-01;bat=100
+    RSSI raw -41.0 dBm | SNR 
+10.0 dB | smoothed 
+-41.0 dBm | peak -41.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #2  payload=CAT-01;bat=100
+    RSSI raw -41.0 dBm | SNR 
+10.5 dB | smoothed 
+-41.0 dBm | peak -41.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #3  payload=CAT-01;bat=100
+    RSSI raw -40.0 dBm | SNR 
+10.0 dB | smoothed 
+-40.7 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+t_ms,rssi_dbm,snr_db,flags,raw_dbm
+1018,-127.0,-127.0,4,-127.0
+2020,-127.0,-127.0,4,-127.0
+3363,-40.0,9.7,5,-40.0
+4562,-38.0,12.7,5,-36.0
+5761,-37.3,13.5,5,-36.0
+6960,-37.0,13.2,5,-36.0
+8159,-36.8,13.2,5,-36.0
+9359,-35.8,12.7,5,-35.0
+10558,-35.8,13.5,5,-36.0
+11757,-36.2,13.2,5,-38.0
+12956,-36.4,13.5,5,-37.0
+14155,-36.6,13.2,5,-37.0
+15355,-38.0,12.0,5,-42.0
+16554,-37.4,13.2,5,-33.0
+17753,-35.8,12.7,5,-30.0
+18952,-35.6,12.7,5,-36.0
+20151,-35.2,10.0,5,-35.0
+21351,-34.0,10.2,5,-36.0
+22550,-34.8,13.7,5,-37.0
+23749,-36.2,13.2,5,-37.0
+24948,-36.0,9.7,5,-35.0
+26147,-36.0,11.5,5,-35.0
+27347,-36.2,13.5,5,-37.0
+28546,-35.8,12.7,5,-35.0
+29745,-35.6,12.0,5,-36.0
+30944,-36.4,11.7,5,-39.0
+32143,-36.4,10.7,5,-35.0
+33343,-36.4,13.2,5,-37.0
+34542,-37.2,12.0,5,-39.0
+35741,-37.0,10.7,5,-35.0
+36940,-38.4,10.2,5,-46.0
+38139,-39.4,4.5,5,-40.0
+39339,-40.6,6.7,5,-43.0
+40538,-41.8,8.0,5,-45.0
+41737,-43.2,9.2,5,-42.0
+42936,-43.0,8.2,5,-45.0
+44135,-44.2,7.7,5,-46.0
+45335,-44.8,8.7,5,-46.0
+46534,-44.6,8.5,5,-44.0
+47733,-45.2,8.2,5,-45.0
+48932,-45.4,8.2,5,-46.0
+50131,-45.4,9.5,5,-46.0
+51331,-45.6,9.2,5,-47.0
+52530,-45.2,9.2,5,-42.0
+53729,-45.6,9.7,5,-47.0
+54928,-46.4,10.0,5,-50.0
+56127,-47.4,11.2,5,-51.0
+57327,-46.6,12.0,5,-43.0
+58526,-47.6,8.7,5,-47.0
+59725,-48.8,9.5,5,-53.0
+60924,-49.0,11.7,5,-51.0
+62123,-50.0,9.0,5,-56.0
+63322,-53.4,7.2,5,-60.0
+64522,-55.0,6.5,5,-55.0
+65721,-55.8,7.7,5,-57.0
+66920,-57.0,6.5,5,-57.0
+68119,-58.4,6.2,5,-63.0
+69318,-57.6,7.0,5,-56.0
+70518,-58.0,5.0,5,-57.0
+71717,-58.2,6.2,5,-58.0
+72916,-59.2,6.7,5,-62.0
+74115,-58.0,9.0,5,-57.0
+75314,-57.2,11.7,5,-52.0
+76513,-57.2,11.7,12,-52.0
+898,-40.0,10.0,1,-40.0
+1900,-40.0,10.0,4,-40.0
+# records: 66
+[+] pkt #4  payload=CAT-01;bat=100
+    RSSI raw -40.0 dBm | SNR 
+10.3 dB | smoothed 
+-40.5 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #5  payload=CAT-01;bat=100
+    RSSI raw -43.0 dBm | SNR 
+10.0 dB | smoothed 
+-41.0 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #6  payload=CAT-01;bat=100
+    RSSI raw -42.0 dBm | SNR 
+10.3 dB | smoothed 
+-41.2 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #7  payload=CAT-01;bat=100
+    RSSI raw -41.0 dBm | SNR 
+9.8 dB | smoothed 
+-41.2 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #8  payload=CAT-01;bat=100
+    RSSI raw -40.0 dBm | SNR 
+10.0 dB | smoothed 
+-41.2 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #9  payload=CAT-01;bat=100
+    RSSI raw -40.0 dBm | SNR 
+10.0 dB | smoothed 
+-41.2 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #10  payload=CAT-01;bat=100
+    RSSI raw -40.0 dBm | SNR 
+10.3 dB | smoothed 
+-40.6 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+[+] pkt #11  payload=CAT-01;bat=100
+    RSSI raw -40.0 dBm | SNR 
+10.3 dB | smoothed 
+-40.2 dBm | peak -40.0 dBm
+    signal [####################] 100%
+    very close - check under bushes
+
+
+--- done ---
