@@ -1,0 +1,8 @@
+# Build output. The release APK is a ~53 MB binary that changes on every
+# rebuild, so committing it means the repository grows by that much each time
+# without any of it being source. Build it instead:
+#     tools/build_release.sh --install
+*.apk
+
+# macOS
+.DS_Store
