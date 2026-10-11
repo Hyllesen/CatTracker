@@ -69,6 +69,10 @@ uint8_t rxBuf[64];
 uint32_t lastPacketMs = 0;
 bool everHeard = false;
 uint32_t packetCount = 0;
+// SNR of the last received packet, captured alongside the RSSI. getSNR() must
+// be read while the packet is still current - it decodes the demodulator's
+// last result, which the next receive() overwrites.
+float snrLast = 0.0;
 
 uint8_t rssiToPercent(float rssi) {
   if (rssi <= RSSI_FLOOR) return 0;
@@ -108,7 +112,7 @@ void publishSignal(bool fresh) {
 
   pkt[0] = (fresh ? 0x01 : 0x00) | (stale ? 0x02 : 0x00);
   int16_t r10 = (int16_t)((have ? rssiSmoothed : -127.0f) * 10.0f);
-  int16_t s10 = 0;
+  int16_t s10 = (int16_t)(snrLast * 10.0f);
   pkt[1] = (uint8_t)(r10 & 0xFF);
   pkt[2] = (uint8_t)(r10 >> 8);
   pkt[3] = (uint8_t)(s10 & 0xFF);
@@ -281,6 +285,9 @@ void loop() {
 
   if (state == RADIOLIB_ERR_NONE) {
     float rssi = radio.getRSSI();
+    // Read SNR immediately after the RSSI, before anything else touches the
+    // demodulator.
+    snrLast = radio.getSNR();
     pushRssi(rssi);
     lastPacketMs = millis();
     everHeard = true;
@@ -296,7 +303,9 @@ void loop() {
     Serial.print(rssi, 1);
     Serial.print(F(" dBm  smoothed "));
     Serial.print(rssiSmoothed, 1);
-    Serial.print(F(" dBm  signal "));
+    Serial.print(F(" dBm  snr "));
+    Serial.print(snrLast, 1);
+    Serial.print(F(" dB  signal "));
     Serial.print(rssiToPercent(rssiSmoothed));
     Serial.println(F("%"));
   } else if (state == RADIOLIB_ERR_RX_TIMEOUT) {
