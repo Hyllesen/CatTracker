@@ -130,7 +130,12 @@ const uint32_t PING_INTERVAL_MS = 5000;
 const uint8_t BATT_PIN = 20;          // Arduino index for P0.29 (silkscreen "029")
 const float   BATT_DIVIDER = 2.0f;    // equal high/low resistors
 const float   VREF_MV = 3300.0f;
-const float   ADC_MAX = 4095.0f;      // 12-bit
+// The core runs the SAADC with RESP set to Bypass, so its result is NOT scaled
+// to VDD the way a normal conversion is. Asking for 12-bit does not give more
+// precision here - it gives a 10-bit value wearing a 12-bit label. Left at the
+// core's default 10-bit, 2.03V at the pin reads 629, which matches a
+// multimeter. Do not raise this without re-checking the scale.
+const float   ADC_MAX = 1023.0f;     // 10-bit, core default
 const uint32_t BATT_SAMPLE_MS = 60000;
 
 // Charge curve for a single-cell LiPo, open-circuit, at a light load. A cell
@@ -148,8 +153,13 @@ uint8_t batteryPct = 0;
 bool batteryValid = false;
 float batteryMv = 0.0f;
 
+uint32_t battRaw[6];
+
 uint8_t readBatteryPercent() {
-  uint32_t raw = analogRead(BATT_PIN);
+  for (uint8_t i = 0; i < 6; i++) {
+    battRaw[i] = analogRead(BATT_PIN);
+  }
+  uint32_t raw = battRaw[0];
   batteryMv = (raw * VREF_MV / ADC_MAX) * BATT_DIVIDER;
 
   // A pin that is not wired reads the pin's own leakage floor; treat anything
@@ -361,7 +371,7 @@ void setup() {
   // merely quieting it. 'v' prints the report afterwards.
   if (sx1278Present) {
     radioInit();
-    analogReadResolution(12);
+    // Deliberately NOT calling analogReadResolution(12) - see ADC_MAX.
   }
 
   pinMode(0, INPUT_PULLUP);   // BOOT button -> ping now
@@ -449,6 +459,12 @@ void loop() {
         Serial.print(F("mV"));
         if (!batteryValid) {
           Serial.print(F("  (no reading - check pin/wiring)"));
+        }
+        Serial.println();
+        Serial.print(F("[RAW] "));
+        for (uint8_t i = 0; i < 6; i++) {
+          Serial.print(battRaw[i]);
+          Serial.print(' ');
         }
         Serial.println();
       }
