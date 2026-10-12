@@ -202,12 +202,32 @@ are the same number with no translation in between. `029` is free — the radio
 uses `002`, `011`, `013`, `015` and `031`.
 
 ```
-cell +  ──[1M]──┬── "029" pad
-               │
-              [1M]
-               │
-cell −  ────────┴── GND pad
+   cell +            "B+" pad
+      │
+     [1M]  R1
+      │
+      ├──────────────  "029" pad   ← net B, the junction
+      │
+     [1M]  R2
+      │
+   cell −            "B-" pad
+      │
+    "GND" pad                     ← net C, also the cell negative
 ```
+
+Resistors are not polarised — orientation does not matter.
+
+**The netlist, if the diagram doesn't render for you** — three nets, and that
+is the entire circuit:
+
+| Net | Connects to |
+|-----|--------------|
+| **A** — cell positive | `B+` pad, one leg of **R1** |
+| **B** — junction | `029` pad, other leg of **R1**, one leg of **R2** |
+| **C** — cell negative | `B-` pad, other leg of **R2**, a `GND` pad |
+
+Three connections to make on net B, and that is what makes it a divider rather
+than a wire.
 
 Two equal 1 MΩ resistors give the 1:2 the firmware expects. That divides
 4.2 V down to 2.1 V, inside the 3.0 V ADC reference, and costs only ~2 µA
