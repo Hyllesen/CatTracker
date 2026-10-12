@@ -42,8 +42,12 @@ STEP_HZ = [
 ]
 
 SAMPLE_RATE = 22050  # plenty for tones under 2 kHz, and halves the file size
-DURATION_S = 0.18     # short enough to read as a blip, long enough to locate
-PEAK = 0.35          # leave headroom so a rapid repeat does not clip
+DURATION_S = 0.22     # short enough to read as a blip, long enough to locate
+# Peak amplitude. At 0.35 (-9 dBFS) the tones played correctly but were easy
+# to miss - a quarter-second quiet blip every 5 s on a phone speaker does not
+# reliably reach the ear outdoors. 0.8 leaves 2 dB of headroom, so repeated
+# blips cannot clip.
+PEAK = 0.8
 
 # Envelope, as fractions of the total tone length. A raw sine starting and
 # ending at full scale clicks audibly on a phone speaker; short ramps at both
