@@ -103,7 +103,7 @@ const uint8_t CR_4_7_RAW  = 0x06;  // ModemConfig1 bits 3:1
 // 1s while bench-testing RSSI: at 5s the handheld only gets one sample per 5m
 // of walking. Put this back to 5000 before running on battery - it quadruples
 // transmit energy use, which matters on a 150mAh collar.
-const uint32_t PING_INTERVAL_MS = 1000;
+const uint32_t PING_INTERVAL_MS = 5000;
 
 // Read-modify-write of bits [startBit..endBit] in a register. RadioLib writes
 // modem registers this way, which preserves the chip's power-on default bits

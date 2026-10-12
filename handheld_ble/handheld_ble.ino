@@ -35,14 +35,18 @@ const uint16_t PREAMBLE   = 8;
 const float RSSI_CEIL  = -40.0;   // measured: ~arm's length
 const float RSSI_FLOOR = -75.0;   // measured: below this, untrustworthy
 const uint8_t SMOOTH_N = 12;
-const uint32_t STALE_MS = 8000;
+// Must comfortably exceed one collar ping interval, or a couple of missed
+// packets trip "signal lost" while the collar is perfectly fine.
+const uint32_t STALE_MS = 15000;
 
 // The collar's transmit interval (PING_INTERVAL_MS in collar/collar.ino).
 // RadioLib's receive() blocks until a preamble arrives or the timeout expires,
 // so this window must cover a full ping period or roughly half of every ping is
 // dropped. The extra margin stops a ping landing exactly on the window edge
 // from being missed due to scheduling jitter.
-const uint32_t COLLAR_PING_MS = 1000;
+//
+// NOTE: these two boards are coupled - change one interval, change the other.
+const uint32_t COLLAR_PING_MS = 5000;
 const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
 
 // ---- BLE ----
