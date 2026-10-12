@@ -61,7 +61,7 @@ const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
 //   [3..4]  SNR  * 10, int16 dB
 //   [5]     signal strength 0..100
 //   [6]     seconds since last packet (capped 255)
-#define SIGNAL_PKT_LEN 7
+#define SIGNAL_PKT_LEN 8
 
 BLECharacteristic* signalChar = nullptr;
 
@@ -78,6 +78,24 @@ float rssiHistory[SMOOTH_N];
 uint8_t rssiIdx = 0, rssiCount = 0;
 float rssiSmoothed = 0.0;
 uint8_t rxBuf[64];
+
+// Battery percent parsed out of the collar payload, e.g. "CAT-01;bat=87".
+// 0xFF means unknown: the collar reports "--" until its ADC pin is wired.
+uint8_t batteryPct = 0xFF;
+
+void parseBattery(const char* payload) {
+  const char* p = strstr(payload, "bat=");
+  if (!p) { batteryPct = 0xFF; return; }
+  p += 4;
+  if (*p < '0' || *p > '9') { batteryPct = 0xFF; return; }  // "--"
+  int v = 0;
+  while (*p >= '0' && *p <= '9') {
+    v = v * 10 + (*p - '0');
+    if (v > 100) { v = 100; break; }
+    p++;
+  }
+  batteryPct = (uint8_t)v;
+}
 
 uint32_t lastPacketMs = 0;
 bool everHeard = false;
@@ -133,6 +151,7 @@ void publishSignal(bool fresh) {
   pkt[5] = have ? rssiToPercent(rssiSmoothed) : 0;
   uint32_t ageS = have ? ((millis() - lastPacketMs) / 1000) : 0;
   pkt[6] = (ageS > 255) ? 255 : (uint8_t)ageS;
+  pkt[7] = batteryPct;
 
   if (VERBOSE_PUBLISH) {
     Serial.print(F("  [publish] fresh="));
@@ -318,6 +337,15 @@ void loop() {
     // Read SNR immediately after the RSSI, before anything else touches the
     // demodulator.
     snrLast = radio.getSNR();
+
+    // The payload is ASCII ("CAT-01;bat=87") but RadioLib neither reports its
+    // length nor terminates it, so stale FIFO bytes follow it. Scan to the
+    // first non-printable byte and terminate there.
+    size_t n = 0;
+    while (n < sizeof(rxBuf) && rxBuf[n] >= 0x20 && rxBuf[n] < 0x7F) n++;
+    rxBuf[n] = '\0';
+    parseBattery((const char*)rxBuf);
+
     pushRssi(rssi);
     lastPacketMs = millis();
     everHeard = true;

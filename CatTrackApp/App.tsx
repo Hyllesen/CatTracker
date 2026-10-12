@@ -400,6 +400,8 @@ function Tracker() {
         signal {signal.percent}% · tone step {step} · age {signal.ageSeconds}s
       </Text>
 
+      {status === 'ready' && <BatteryChip percent={signal.batteryPercent} />}
+
       {status === 'ready' && (
         <BeepIndicator
           elapsedMs={beepElapsed}
@@ -479,6 +481,40 @@ function Tracker() {
   );
 }
 
+/**
+ * Collar cell charge, shown separately from signal so the two are never
+ * confused. Deliberately says "no reading" rather than 0% when the ADC pin is
+ * unwired - a false low-battery warning on a cat tracker is worse than none,
+ * because it teaches you to ignore the indicator.
+ */
+function BatteryChip({percent}: {percent: number | null}) {
+  if (percent === null) {
+    return (
+      <View style={styles.battRow}>
+        <View style={[styles.battBar, {backgroundColor: '#3a4553'}]} />
+        <Text style={[styles.battText, {color: '#5d6d7e'}]}>battery --</Text>
+      </View>
+    );
+  }
+
+  const color = percent <= 15 ? '#e74c3c' : percent <= 35 ? '#f39c12' : '#2ecc71';
+  return (
+    <View style={styles.battRow}>
+      <View style={[styles.battBar, {backgroundColor: '#3a4553'}]}>
+        <View
+          style={[
+            styles.battFill,
+            {width: `${percent}%`, backgroundColor: color},
+          ]}
+        />
+      </View>
+      <Text style={[styles.battText, {color}]}>
+        battery {percent}%{percent <= 15 ? ' - change soon' : ''}
+      </Text>
+    </View>
+  );
+}
+
 function App() {
   return (
     <SafeAreaProvider>
@@ -543,6 +579,27 @@ const styles = StyleSheet.create({
   },
   spinner: {
     marginTop: 20,
+  },
+  battRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  battBar: {
+    width: 54,
+    height: 7,
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginRight: 8,
+  },
+  battFill: {
+    height: 7,
+    borderRadius: 4,
+  },
+  battText: {
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
   },
   error: {
     color: '#e74c3c',

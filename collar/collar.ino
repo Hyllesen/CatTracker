@@ -105,6 +105,74 @@ const uint8_t CR_4_7_RAW  = 0x06;  // ModemConfig1 bits 3:1
 // transmit energy use, which matters on a 150mAh collar.
 const uint32_t PING_INTERVAL_MS = 5000;
 
+// ---------------------------------------------------------------------------
+// Battery sense
+// ---------------------------------------------------------------------------
+// Wire the cell's POSITIVE terminal to BATT_PIN through a resistor divider.
+// Two equal resistors give the 1:2 below, which keeps a 4.2V cell (3.0V ADC
+// reference) comfortably inside range and costs only ~2uA, against ~10mA for
+// the radio. Use 1M + 1M: a 10k pair would draw 210uA and cost ~3mAh over a
+// 16h run, which is real on a 150mAh cell.
+//
+// BATT_PIN is a raw nRF port pin, not the Arduino pin name - the core's
+// "A5" means P0.29, but "A1" means P0.05, so the Arduino alias is misleading
+// here. Verify after wiring: a healthy 4.1V cell should read ~2.05V at the
+// pin. 0V means the pin is floating or wrong; 3.3V means the divider is
+// missing and you are feeding the ADC the full cell.
+const uint8_t BATT_PIN = 29;          // P0.29
+const float   BATT_DIVIDER = 2.0f;    // equal high/low resistors
+const float   VREF_MV = 3300.0f;
+const float   ADC_MAX = 4095.0f;      // 12-bit
+const uint32_t BATT_SAMPLE_MS = 60000;
+
+// Charge curve for a single-cell LiPo, open-circuit, at a light load. A cell
+// sagging under load reads lower than these points, which is the safe
+// direction - it warns early rather than late.
+struct BattPoint { float mv; uint8_t pct; };
+const BattPoint BATT_CURVE[] = {
+  {4200, 100}, {4000, 85}, {3800, 55}, {3700, 25},
+  {3600, 10},  {3400, 0},
+};
+const uint8_t BATT_CURVE_N = sizeof(BATT_CURVE) / sizeof(BATT_CURVE[0]);
+
+uint32_t lastBattMs = 0;
+uint8_t batteryPct = 0;
+bool batteryValid = false;
+
+uint8_t readBatteryPercent() {
+  uint32_t raw = analogRead(BATT_PIN);
+  float mv = (raw * VREF_MV / ADC_MAX) * BATT_DIVIDER;
+
+  // A pin that is not wired reads the pin's own leakage floor; treat anything
+  // below a plausible cell voltage as "no reading" rather than 0%.
+  if (mv < 2000.0f) {
+    batteryValid = false;
+    return 0;
+  }
+  batteryValid = true;
+
+  if (mv >= BATT_CURVE[0].mv) return BATT_CURVE[0].pct;
+  for (uint8_t i = 1; i < BATT_CURVE_N; i++) {
+    if (mv >= BATT_CURVE[i].mv) {
+      float span = BATT_CURVE[i - 1].mv - BATT_CURVE[i].mv;
+      float frac = (BATT_CURVE[i - 1].mv - mv) / span;
+      float pct = BATT_CURVE[i - 1].pct + frac * (BATT_CURVE[i].pct - BATT_CURVE[i - 1].pct);
+      return (uint8_t)(pct + 0.5f);
+    }
+  }
+  return 0;
+}
+
+// Build "CAT-01;bat=NN". Built into a buffer rather than a literal so the
+// reported figure tracks the cell instead of being a hardcoded 100.
+void buildPayload(char* out, size_t cap) {
+  if (batteryValid) {
+    snprintf(out, cap, "CAT-01;bat=%u", batteryPct);
+  } else {
+    strcpy(out, "CAT-01;bat=--");
+  }
+}
+
 // Read-modify-write of bits [startBit..endBit] in a register. RadioLib writes
 // modem registers this way, which preserves the chip's power-on default bits
 // (e.g. RegModemConfig2 bit2 CRC aggregation, RegInvertIQ bits 5:3, RegDetect-
@@ -283,6 +351,7 @@ void setup() {
   // merely quieting it. 'v' prints the report afterwards.
   if (sx1278Present) {
     radioInit();
+    analogReadResolution(12);
   }
 
   pinMode(0, INPUT_PULLUP);   // BOOT button -> ping now
@@ -316,7 +385,10 @@ void printConfig() {
   Serial.println();
   Serial.print(F("Pinging every "));
   Serial.print(PING_INTERVAL_MS / 1000);
-  Serial.println(F("s: CAT-01;bat=100"));
+  Serial.println(F("s"));
+  Serial.print(F("Battery pin: P0."));
+  Serial.print(BATT_PIN);
+  Serial.println(F(" (expect ~2.05V on a 4.1V cell with a 1:2 divider)"));
   Serial.println(F("'v' again to silence."));
   Serial.println();
 }
@@ -339,7 +411,9 @@ void loop() {
     delay(50);
     while (digitalRead(0) == LOW) delay(10);
     pingCount++;
-    bool ok = sendPacket("CAT-01;bat=100");
+    char payload[24];
+    buildPayload(payload, sizeof(payload));
+    bool ok = sendPacket(payload);
     if (logOk()) {
       Serial.print(F("[TX] manual ping #"));
       Serial.print(pingCount);
@@ -351,7 +425,22 @@ void loop() {
 
   if (millis() - lastPingMs >= PING_INTERVAL_MS) {
     pingCount++;
-    bool ok = sendPacket("CAT-01;bat=100");
+
+    // Sample the cell once a minute rather than every ping. The SAADC is left
+    // idle in between, and the cell cannot change meaningfully in 5s.
+    if (millis() - lastBattMs >= BATT_SAMPLE_MS) {
+      lastBattMs = millis();
+      batteryPct = readBatteryPercent();
+      if (logOk()) {
+        Serial.print(F("[BATT] "));
+        Serial.print(batteryPct);
+        Serial.println(F("%"));
+      }
+    }
+
+    char payload[24];
+    buildPayload(payload, sizeof(payload));
+    bool ok = sendPacket(payload);
     if (logOk()) {
       Serial.print(F("[TX] ping #"));
       Serial.print(pingCount);

@@ -1,12 +1,13 @@
 /**
  * Signal model decoded from the handheld's BLE notification packet.
  *
- * Wire format (7 bytes, little-endian) produced by handheld_ble/handheld_ble.ino:
+ * Wire format (8 bytes, little-endian) produced by handheld_ble/handheld_ble.ino:
  *   [0]     flags      bit0 = fresh packet, bit1 = stale (>8s since last)
  *   [1..2]  RSSI * 10  int16 dBm   (-254 => -25.4 dBm, -1270 => no data)
  *   [3..4]  SNR * 10   int16 dB
  *   [5]     signal     0..100
  *   [6]     age        seconds since last packet (capped 255)
+ *   [7]     battery    collar cell 0..100, or 255 when unwired/unknown
  */
 
 export const SIGNAL_CHAR_UUID = '8e7a1b21-3f4d-4c8e-9a1f-2b6d5e4c3a21';
@@ -15,6 +16,9 @@ export const DEVICE_NAME = 'CatTracker';
 
 export const FLAG_FRESH = 0x01;
 export const FLAG_STALE = 0x02;
+
+/** Byte value the firmware sends for "battery pin not wired / no reading". */
+export const BATTERY_UNKNOWN = 255;
 
 export type Signal = {
   /** Raw RSSI in dBm, or null before the first packet arrives. */
@@ -25,6 +29,8 @@ export type Signal = {
   percent: number;
   /** Seconds since the last packet was heard. */
   ageSeconds: number;
+  /** Collar cell charge 0..100, or null until the ADC pin is wired. */
+  batteryPercent: number | null;
   /** True when a packet arrived in this update. */
   fresh: boolean;
   /** True when we have heard the collar before but have not recently. */
@@ -38,6 +44,7 @@ export const EMPTY_SIGNAL: Signal = {
   snr: null,
   percent: 0,
   ageSeconds: 0,
+  batteryPercent: null,
   fresh: false,
   stale: false,
   at: 0,
@@ -69,6 +76,8 @@ export function decodeSignal(bytes: Uint8Array | null): Signal | null {
     snr: rssi === null ? null : snrRaw / 10,
     percent,
     ageSeconds,
+    batteryPercent:
+      bytes.length >= 8 && bytes[7] !== BATTERY_UNKNOWN ? bytes[7] : null,
     fresh: (flags & FLAG_FRESH) !== 0,
     stale: (flags & FLAG_STALE) !== 0,
     at: Date.now(),
