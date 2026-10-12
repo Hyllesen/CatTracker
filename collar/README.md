@@ -1,7 +1,7 @@
 # Cat Collar Transmitter — Setup
 
 TENSTAR ROBOT nRF52840 Pro Micro + RA-02 (SX1278, 433 MHz), powered by a
-150 mAh LiPo. Pings every 1 s while bench-testing; the handheld at `../handheld`
+150 mAh LiPo. Pings every 5 s; the handheld at `../handheld`
 receives them and forwards the signal to the phone.
 
 The SPI pins are **bit-banged in software** — the nRF52840's hardware SPI is
@@ -149,6 +149,87 @@ anything, since it normally runs with no USB attached at all.
 
 **For any enclosure or field build, never re-enable unconditional printing.**
 
+## Battery
+
+### Connecting the cell: use `B+` / `B-`
+
+This board (SAMIROB / FEIYANG nRF52840 Pro Micro) has `B-` and `B+` pads
+flanking the USB-C connector, alongside separate `RAW` (unregulated USB 5 V) and
+`VCC` (regulated system rail) pads. Those pads exist so a single-cell LiPo
+connects there **instead of** `VCC`.
+
+| Cell | Board pad |
+|------|-----------|
+| `+` | **`B+`** |
+| `-` | **`B-`** |
+
+Do not connect the cell to `VCC`. Doing so ties the cell to the supply rail
+with no charging path, and back-feeds 5 V from USB into a 4.2 V cell.
+
+### ⚠️ Confirm three things with a multimeter before the first solder
+
+The presence of `B+`/`B-` and a charge LED is strong evidence of a LiPo-capable
+design, but the pads alone do not prove a charger is populated. Three checks,
+about a minute total, each with a pass condition:
+
+| Check | Method | Pass |
+|-------|--------|------|
+| **Does it charge?** | Cell on `B+`/`B-`, meter DC across `B+` and `GND`, plug in USB | Reading creeps toward **4.2 V**. Flat at 4.1 V = pads present but charging is external |
+| **Is the rail safe?** | Cell connected **and** USB plugged, meter the `VCC` pad | **~3.3 V**. If it reads 4.1 V or 5 V, the battery rail is hard-tied to VCC — stop |
+| **Is it protected?** | Run the tracker flat in normal use, then measure the cell | **≥3.0 V.** Below ~2.7 V means no undervoltage protection |
+
+That last one matters most for a cat collar. The board will cheerfully transmit
+until the cell is exhausted, and a LiPo taken below ~3.0 V suffers permanent
+internal damage — copper plating strips off the plates. If the cell measures
+below 2.7 V after a run, fit a 1-cell protection board (a few cents, roughly
+postage-stamp sized) before putting it on a cat.
+
+**Charge current:** if the board uses a TP4056 at its default 1 A, that is ~7C
+for a 150 mAh cell — well above the 0.5C a small pouch cell tolerates, and it
+will swell over many cycles. The charge-current resistor is `R_prog` near the
+charge IC; ~1.2 kΩ gives 1 A, ~10 kΩ gives ~100 mA. If it cannot be changed,
+keep charge sessions short and do not top the cell up daily.
+
+### Battery sense: `029` → app
+
+The app shows collar charge as a percentage, carried in the payload
+(`CAT-01;bat=NN`) and relayed by the handheld. The cell's positive terminal
+needs a divider onto a free ADC pin.
+
+**Use the pad labelled `029` (P0.29).** It is silkscreened with the raw port
+number, so the pad you solder to and the `BATT_PIN` constant in the firmware
+are the same number with no translation in between. `029` is free — the radio
+uses `002`, `011`, `013`, `015` and `031`.
+
+```
+cell +  ──[1M]──┬── "029" pad
+               │
+              [1M]
+               │
+cell −  ────────┴── GND pad
+```
+
+Two equal 1 MΩ resistors give the 1:2 the firmware expects. That divides
+4.2 V down to 2.1 V, inside the 3.0 V ADC reference, and costs only ~2 µA
+against ~10 mA for the radio. **Do not substitute a 10 KΩ pair**: that draws
+210 µA and costs roughly 3 mAh over a 16-hour run, which is real on a 150 mAh
+cell.
+
+**Verify by the reading, not by trusting the pin number:**
+
+| Voltage at `029` | Meaning |
+|------------------|---------|
+| **~2.05 V** | Correct — a 4.1 V cell reads ~95% in the app |
+| 0 V | Wrong pin, or not connected |
+| 3.3 V | **Divider missing** — the ADC is being fed the full cell |
+
+Until that pin is wired, the collar reports `--` and the app shows
+**`battery --`**. That is deliberate: a false low-battery warning on a cat
+tracker is worse than no warning at all, because it trains you to ignore it.
+
+The cell is sampled once a minute, not every 5 s ping, leaving the SAADC idle
+between reads.
+
 ## Power
 
 **The collar will not run reliably from a power bank.** It draws only ~9 mA
@@ -235,6 +316,7 @@ The BOOT pin is `0`, configured `INPUT_PULLUP`, so the button pulls it low.
 [TX] ping #488 sent
 ```
 
-Payload is `CAT-01;bat=100` — a literal string with a **hardcoded** 100%
-battery. There is no binary framing, no CRC of our own, and no multi-cat
-support yet. Real battery measurement still needs to go in.
+Payload is `CAT-01;bat=NN`, where `NN` is the cell charge measured through the
+`029` divider (see "Battery sense" above) — or `--` when that pin is not wired.
+It is plain ASCII: no binary framing, no CRC of our own, and no multi-cat
+support yet.
