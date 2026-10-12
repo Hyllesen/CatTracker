@@ -70,16 +70,19 @@ export function playToneStep(step: number): void {
     return;
   }
 
-  // Always stop before playing. react-native-sound's native play() calls
-  // MediaPlayer.start() with no rewind, so once a tone has finished the player
-  // sits in PlaybackCompleted - and start() there is a silent no-op. Without
-  // this, only the very first beep of a session would ever be heard.
+  // Rewind before playing. react-native-sound's native play() calls
+  // MediaPlayer.start(), which is a NO-OP once the player has reached
+  // PlaybackCompleted - so only the first tone of a session would ever be
+  // heard. stop() does not clear that state either: the native stop only
+  // pauses/seeks when the player isPlaying, and a completed player is left
+  // exactly where it is. Seeking back to 0 is what makes start() work again.
   //
-  // Guarding on isPlaying() is not enough: the library clears its _playing
-  // flag on completion, so it reports false precisely when the player is in
-  // the stuck state. stop() puts the player back into a state where start()
-  // plays from the beginning.
-  sound.stop(() => sound.play());
+  // setCurrentTime() is fire-and-forget (it returns `this`, not a promise),
+  // but both it and play() are dispatched onto the same native module queue,
+  // so the seekTo lands before the start(). Calling play() without the
+  // preceding seek is what silently swallowed every beep after the first.
+  sound.setCurrentTime(0);
+  sound.play();
 }
 
 export function setTonesEnabled(value: boolean): void {
