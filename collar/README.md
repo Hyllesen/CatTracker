@@ -184,11 +184,27 @@ internal damage — copper plating strips off the plates. If the cell measures
 below 2.7 V after a run, fit a 1-cell protection board (a few cents, roughly
 postage-stamp sized) before putting it on a cat.
 
-**Charge current:** if the board uses a TP4056 at its default 1 A, that is ~7C
-for a 150 mAh cell — well above the 0.5C a small pouch cell tolerates, and it
-will swell over many cycles. The charge-current resistor is `R_prog` near the
-charge IC; ~1.2 kΩ gives 1 A, ~10 kΩ gives ~100 mA. If it cannot be changed,
-keep charge sessions short and do not top the cell up daily.
+The TENSTAR manual confirms the first two checks: the board takes the cell on
+`B+`/`B-`, charges at **100 mA**, and runs a 3.3 V LDO. It does not document
+the protection circuit, so that one stays a bench check.
+
+**Charge current is 100 mA** — ~0.67C for a 150 mAh cell, which is a sensible
+rate. No change needed.
+
+### Entering the bootloader
+
+There is no BOOT button on this board. **Short the `RST` pad to a `GND` pad
+twice, within half a second.** On the right edge `GND` is 3rd from the USB end
+and `RST` is 4th, so they are adjacent — bridge them with a jumper and flick it
+twice quickly.
+
+The board then appears as a **USB mass storage drive** (named `NICENANO` on
+these clones, containing `CURRENT.uf2`, `INDEX.HTM` and `INFO_UF2.TXT`).
+Flash by dragging a `.uf2` onto it — no port selection needed.
+
+**LED tell:** the bootloader makes the status LED *fade*; the running
+application makes it *blink*. A steadily blinking blue LED is the app, not the
+bootloader.
 
 ### Battery sense: `029` → app
 
