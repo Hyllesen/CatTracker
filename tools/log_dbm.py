@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Print the handheld's signal level to the terminal as packets arrive.
 
-    python3 tools/log_dbm.py
+    python3 tools/log_dbm.py                 live readout
+    python3 tools/log_dbm.py baseline        same, tagged with a config name
+
+The optional label is printed at startup and in the closing summary, so a
+series of antenna configurations can be compared without keeping notes.
 
 Ctrl-C to stop. Handy for antenna testing: swap an antenna and watch the
-number move.
+number move. Keep both boards the same distance apart and orientation
+between runs, and check the spread - if it climbs past a couple of dB the
+setup is drifting and the comparison means nothing.
 
 The port is found by probing for the handheld's banner rather than by
 filename, because with two boards plugged in the usbmodem suffixes get
@@ -65,6 +71,8 @@ def find_port():
 
 
 def main():
+    label = sys.argv[1] if len(sys.argv) > 1 else None
+
     port = find_port()
     if port is None:
         sys.exit("Could not find the handheld. Is it plugged in?")
@@ -78,7 +86,10 @@ def main():
     s.open()
     time.sleep(2.5)  # let the boot banner go by
 
-    print(f"port {port} - Ctrl-C to stop\n")
+    print(f"port {port} - Ctrl-C to stop")
+    if label:
+        print(f"config: {label}")
+    print()
 
     seen = []
     try:
@@ -105,7 +116,10 @@ def main():
 
     if seen:
         print(f"\n{len(seen)} packets   avg {sum(seen)/len(seen):.1f}   "
-              f"min {min(seen):.1f}   max {max(seen):.1f}")
+              f"min {min(seen):.1f}   max {max(seen):.1f}   "
+              f"spread {max(seen) - min(seen):.1f}")
+        if label:
+            print(f"config: {label}")
 
 
 if __name__ == "__main__":
