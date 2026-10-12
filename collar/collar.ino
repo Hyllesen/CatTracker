@@ -114,12 +114,20 @@ const uint32_t PING_INTERVAL_MS = 5000;
 // the radio. Use 1M + 1M: a 10k pair would draw 210uA and cost ~3mAh over a
 // 16h run, which is real on a 150mAh cell.
 //
-// BATT_PIN is a raw nRF port pin, not the Arduino pin name - the core's
-// "A5" means P0.29, but "A1" means P0.05, so the Arduino alias is misleading
-// here. Verify after wiring: a healthy 4.1V cell should read ~2.05V at the
-// pin. 0V means the pin is floating or wrong; 3.3V means the divider is
-// missing and you are feeding the ADC the full cell.
-const uint8_t BATT_PIN = 29;          // P0.29
+// BATT_PIN is an ARDUINO PIN INDEX, not the raw port number printed on the
+// silkscreen. analogRead() maps the index through the core's pin table, and
+// anything that does not resolve to AIN0..AIN7 falls through to `return 0` -
+// a silent hardcoded zero, not a wrong reading.
+//
+// The pad marked "029" is P0.29, which is Arduino index 20 on this core
+// (named A6 in the Adafruit variant - note the variant's A0 is P0.04, not
+// P0.02, so the letter aliases are not a safe way to reason about it).
+//
+// Verified by the reading, not by the pin name: a healthy 4.1V cell through
+// a 1:2 divider should read ~2.05V at the pin. 0V means the pin is floating
+// or wrong; 3.3V means the divider is missing and the full cell is reaching
+// the ADC.
+const uint8_t BATT_PIN = 20;          // Arduino index for P0.29 (silkscreen "029")
 const float   BATT_DIVIDER = 2.0f;    // equal high/low resistors
 const float   VREF_MV = 3300.0f;
 const float   ADC_MAX = 4095.0f;      // 12-bit
@@ -138,18 +146,20 @@ const uint8_t BATT_CURVE_N = sizeof(BATT_CURVE) / sizeof(BATT_CURVE[0]);
 uint32_t lastBattMs = 0;
 uint8_t batteryPct = 0;
 bool batteryValid = false;
+float batteryMv = 0.0f;
 
 uint8_t readBatteryPercent() {
   uint32_t raw = analogRead(BATT_PIN);
-  float mv = (raw * VREF_MV / ADC_MAX) * BATT_DIVIDER;
+  batteryMv = (raw * VREF_MV / ADC_MAX) * BATT_DIVIDER;
 
   // A pin that is not wired reads the pin's own leakage floor; treat anything
   // below a plausible cell voltage as "no reading" rather than 0%.
-  if (mv < 2000.0f) {
+  if (batteryMv < 2000.0f) {
     batteryValid = false;
     return 0;
   }
   batteryValid = true;
+  float mv = batteryMv;
 
   if (mv >= BATT_CURVE[0].mv) return BATT_CURVE[0].pct;
   for (uint8_t i = 1; i < BATT_CURVE_N; i++) {
@@ -386,9 +396,9 @@ void printConfig() {
   Serial.print(F("Pinging every "));
   Serial.print(PING_INTERVAL_MS / 1000);
   Serial.println(F("s"));
-  Serial.print(F("Battery pin: P0."));
+  Serial.print(F("Battery pin: Arduino index "));
   Serial.print(BATT_PIN);
-  Serial.println(F(" (expect ~2.05V on a 4.1V cell with a 1:2 divider)"));
+  Serial.println(F(" (P0.29, the pad marked \"029\")"));
   Serial.println(F("'v' again to silence."));
   Serial.println();
 }
@@ -434,7 +444,13 @@ void loop() {
       if (logOk()) {
         Serial.print(F("[BATT] "));
         Serial.print(batteryPct);
-        Serial.println(F("%"));
+        Serial.print(F("%  "));
+        Serial.print(batteryMv, 0);
+        Serial.print(F("mV"));
+        if (!batteryValid) {
+          Serial.print(F("  (no reading - check pin/wiring)"));
+        }
+        Serial.println();
       }
     }
 
