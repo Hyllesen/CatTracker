@@ -16,27 +16,29 @@ Adafruit Feather. Select the Adafruit board; it works.
 
 ## Wiring (RA-02 → nRF52840)
 
-⚠️ **The RA-02 SPI pads are identified by their silkscreen labels** (SCK, MISO,
-MOSI, NSS) rather than by pin number. Match by label.
+The RA-02 SPI pads are identified by their **silkscreen labels**, not by pin
+number. Match by label. The five wires below are the complete list.
 
-| RA-02 pin | Function | Pro Micro label | Also written |
-|-----------|----------|-----------------|--------------|
+| RA-02 pad | Function | Pro Micro label | Also written |
+|------------|----------|-----------------|--------------|
 | 1, 2, 9 | **GND** | GND | use either GND pad |
 | 3 | **3.3V** | 3.3V / VCC | **3.3 V only.** Never 5 V. |
 | 4 | **RESET** | `031` | P0.31 |
-| 5 | **DIO0** | `015` | P1.15 |
-| 6 | **DIO1** | `002` | P0.02 |
-| 7 | **DIO2** | `011` | P1.11 |
-| 8 | **DIO3** | `013` | P1.13 |
-| 10 | DIO4 | *unused* | |
 | — | **SCK** | `011` | P1.11 |
 | — | **MISO** | `002` | P0.02 |
 | — | **MOSI** | `015` | P1.15 |
 | — | **NSS / CS** | `013` | P1.13 |
 | — | **ANT** | antenna + counterpoise | IPEX socket or ANT pad |
+| 5, 6, 7, 8, 10 | DIO0–DIO4 | **not connected** | unused |
 
-The four SPI signals therefore run: SCK→`011`, MISO→`002`, MOSI→`015`,
-NSS→`013`, RESET→`031`.
+**DIO0–DIO3 are deliberately left unconnected.** The firmware polls the SX1278's
+IRQ flags register for TxDone instead of using the DIO0 interrupt pin
+(`collar/collar.ino:228`), so nothing needs to be attached to them. If you have
+a wire on one, it is doing nothing — and a long wire on a floating pad picks up
+noise, which is worth knowing when debugging.
+
+The five connected signals are: SCK→`011`, MISO→`002`, MOSI→`015`,
+NSS→`013`, RESET→`031`, plus GND, 3.3V and ANT.
 
 ### ⚠️ Pro Micro silkscreen labels are not pin numbers
 
@@ -87,14 +89,18 @@ matters far more than whether the wire exists. **Fix the geometry rigidly**
 
 This is the single most likely cause of a dead collar. A 17 cm wire soldered
 across the module can bridge neighbouring pads. Check specifically that it does
-**not** touch:
+**not** touch any pad that actually has a wire on it:
 
 | If it bridges to | Symptom |
 |------------------|---------|
 | **ANT / IPEX centre** | short across the PA — damaged or dead TX |
 | **3.3V** | short across the rail — board won't boot |
 | **RESET (`031`)** | held in reset — board appears completely dead |
-| **DIO0 (`015`)** | TX never completes — radio silent |
+| **NSS/CS (`013`)** | register writes never land — radio never initialises |
+| **SCK (`011`)** or **MOSI (`015`)** | same — radio never initialises |
+| **MISO (`002`)** | radio initialises but stays permanently silent |
+
+Bridging a **DIO** pad does nothing, since none of them are connected.
 
 If you suspect a bridge, **unpower the board before inspecting it.**
 
