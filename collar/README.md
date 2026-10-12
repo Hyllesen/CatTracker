@@ -217,17 +217,23 @@ uses `002`, `011`, `013`, `015` and `031`.
 
 Resistors are not polarised — orientation does not matter.
 
-**The netlist, if the diagram doesn't render for you** — three nets, and that
-is the entire circuit:
+**Four solder joints, no more:**
 
-| Net | Connects to |
-|-----|--------------|
-| **A** — cell positive | `B+` pad, one leg of **R1** |
-| **B** — junction | `029` pad, other leg of **R1**, one leg of **R2** |
-| **C** — cell negative | `B-` pad, other leg of **R2**, a `GND` pad |
+| # | From | To |
+|---|------|-----|
+| 1 | cell `+` | `B+` pad |
+| 2 | cell `−` | `B-` pad |
+| 3 | **R1** | one leg to `B+`, other leg to `029` |
+| 4 | **R2** | one leg to `029`, other leg to any `GND` pad |
 
-Three connections to make on net B, and that is what makes it a divider rather
-than a wire.
+`R2`'s free leg goes to a `GND` pad rather than `B-` because those two are
+**already the same net inside the board** — the cell negative and the system
+ground are tied through the protection circuit. Do not add a wire between them;
+nothing needs connecting there.
+
+What matters is that `029` ends up touching **three** things: R1's leg, R2's
+leg, and the pad. That shared junction is what makes this a divider instead of
+a wire.
 
 Two equal 1 MΩ resistors give the 1:2 the firmware expects. That divides
 4.2 V down to 2.1 V, inside the 3.0 V ADC reference, and costs only ~2 µA
