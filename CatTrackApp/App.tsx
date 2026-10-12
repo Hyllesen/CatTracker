@@ -129,6 +129,66 @@ function verdict(signal: Signal): {text: string; tone: string} {
   return {text: 'Very weak - move closer', tone: '#e74c3c'};
 }
 
+/** Fallback beacon period before any have been observed, matches the collar's
+ *  PING_INTERVAL_MS. Replaced by the measured cadence once two beeps land. */
+const DEFAULT_BEEP_MS = 5000;
+/** How long the indicator stays lit after a beep. */
+const PULSE_MS = 500;
+/** Intervals kept for the median. A median rather than a mean because the
+ *  occasional missed beacon doubles one sample and would skew an average. */
+const INTERVAL_SAMPLES = 7;
+
+function median(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+/**
+ * Shows how long since the last beacon, and how long until the next one is due.
+ *
+ * The tone alone cannot distinguish "did not hear it" from "there was nothing
+ * to hear", which is exactly the ambiguity that made a quiet tone look like a
+ * broken link. The bar draining makes a missing beacon obvious instead.
+ */
+function BeepIndicator({
+  elapsedMs,
+  expectedMs,
+  pulse,
+}: {
+  elapsedMs: number | null;
+  expectedMs: number;
+  pulse: boolean;
+}) {
+  if (elapsedMs === null) {
+    return <Text style={styles.beepWaiting}>waiting for the first beacon...</Text>;
+  }
+  const remain = Math.max(0, expectedMs - elapsedMs);
+  // Two missed beacons before flagging as late; the cadence is not exact and a
+  // single dropped packet is normal, not a fault worth alarming about.
+  const late = elapsedMs > expectedMs * 2;
+  const fill = Math.min(100, (elapsedMs / expectedMs) * 100);
+
+  return (
+    <View style={styles.beepBox}>
+      <View style={styles.beepRow}>
+        <View style={[styles.beepDot, pulse ? styles.beepDotLit : null]} />
+        <Text style={styles.beepText}>beep {(elapsedMs / 1000).toFixed(1)}s ago</Text>
+        <Text style={[styles.beepNext, late ? styles.beepLate : null]}>
+          {late ? 'no beacon' : `next in ${(remain / 1000).toFixed(1)}s`}
+        </Text>
+      </View>
+      <View style={styles.beepTrack}>
+        <View
+          style={[styles.beepFill, late ? styles.beepFillLate : null, {width: `${fill}%`}]}
+        />
+      </View>
+    </View>
+  );
+}
+
 function Tracker() {
   const insets = useSafeAreaInsets();
   const [status, setStatus] = useState<string>('idle');
@@ -140,6 +200,12 @@ function Tracker() {
   const [csvNote, setCsvNote] = useState<string | null>(null);
   const deviceRef = useRef<Device | null>(null);
   const subRef = useRef<Subscription | null>(null);
+  // Beacon timing. Kept in refs so the BLE callback never needs re-binding,
+  // and so reading them does not re-render on every packet.
+  const lastBeepRef = useRef<number>(0);
+  const intervalsRef = useRef<number[]>([]);
+  const [beep, setBeep] = useState<{at: number; tick: number}>({at: 0, tick: 0});
+  const [pulse, setPulse] = useState(false);
 
   const stop = useCallback(async () => {
     if (subRef.current) {
@@ -150,6 +216,9 @@ function Tracker() {
       await disconnect(deviceRef.current);
       deviceRef.current = null;
     }
+    lastBeepRef.current = 0;
+    intervalsRef.current = [];
+    setBeep({at: 0, tick: 0});
     setStatus('idle');
     setSignal(EMPTY_SIGNAL);
   }, []);
@@ -202,6 +271,19 @@ function Tracker() {
         // should follow - otherwise the beep rate would track notification
         // rate rather than signal rate.
         if (s.fresh) {
+          const now = Date.now();
+          if (lastBeepRef.current > 0) {
+            intervalsRef.current.push(now - lastBeepRef.current);
+            if (intervalsRef.current.length > INTERVAL_SAMPLES) {
+              intervalsRef.current.shift();
+            }
+          }
+          lastBeepRef.current = now;
+          // Functional update: reading beep.tick here would capture a stale
+          // value in the BLE callback and force it into the dependency list.
+          setBeep(b => ({at: now, tick: b.tick + 1}));
+          setPulse(true);
+
           playToneStep(toneStepFor(s.percent));
           // Fire-and-forget: a logging failure must never delay the tone or
           // stall the BLE notification stream.
@@ -224,6 +306,27 @@ function Tracker() {
       releaseTones();
     };
   }, []);
+
+  useEffect(() => {
+    // Only tick while connected: this re-renders 5x a second, and there is no
+    // reason to burn the phone's battery when nothing is being tracked.
+    if (status !== 'ready') {
+      setPulse(false);
+      return;
+    }
+    const id = setInterval(() => {
+      setBeep(b => ({...b, tick: b.tick + 1}));
+      setPulse(p => {
+        const now = Date.now();
+        const since = now - lastBeepRef.current;
+        if (since >= PULSE_MS && p) {
+          return false;
+        }
+        return p;
+      });
+    }, 200);
+    return () => clearInterval(id);
+  }, [status]);
 
   const toggleTones = useCallback(() => {
     const next = !tonesEnabled();
@@ -271,6 +374,10 @@ function Tracker() {
 
   const v = verdict(signal);
   const step = toneStepFor(signal.percent);
+  // Read via beep.tick so the countdown recomputes on each tick.
+  const measured = median(intervalsRef.current);
+  const expectedMs = measured > 0 ? measured : DEFAULT_BEEP_MS;
+  const beepElapsed = beep.at > 0 ? Date.now() - beep.at : null;
 
   return (
     <View style={[styles.container, {paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16}]}>
@@ -292,6 +399,14 @@ function Tracker() {
       <Text style={styles.meta}>
         signal {signal.percent}% · tone step {step} · age {signal.ageSeconds}s
       </Text>
+
+      {status === 'ready' && (
+        <BeepIndicator
+          elapsedMs={beepElapsed}
+          expectedMs={expectedMs}
+          pulse={pulse}
+        />
+      )}
 
       {status !== 'ready' && status !== 'idle' && (
         <ActivityIndicator style={styles.spinner} color="#3498db" />
@@ -533,6 +648,58 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: 'center',
     marginTop: 6,
+  },
+  beepWaiting: {
+    color: '#5d6d7e',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  beepBox: {
+    marginTop: 14,
+  },
+  beepRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  beepDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#243040',
+    marginRight: 8,
+  },
+  beepDotLit: {
+    backgroundColor: '#2ecc71',
+  },
+  beepText: {
+    color: '#95a5a6',
+    fontSize: 13,
+  },
+  beepNext: {
+    color: '#5d6d7e',
+    fontSize: 13,
+    marginLeft: 'auto',
+    fontVariant: ['tabular-nums'],
+  },
+  beepLate: {
+    color: '#e74c3c',
+    fontWeight: '600',
+  },
+  beepTrack: {
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#243040',
+    marginTop: 8,
+    overflow: 'hidden',
+  },
+  beepFill: {
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#2980b9',
+  },
+  beepFillLate: {
+    backgroundColor: '#e74c3c',
   },
 });
 
