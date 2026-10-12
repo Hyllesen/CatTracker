@@ -119,12 +119,35 @@ If you suspect a bridge, **unpower the board before inspecting it.**
 Sync word `0x12` is a private value, so the network ignores random public LoRa
 traffic.
 
-### `PING_INTERVAL_MS` is a test value
+### `PING_INTERVAL_MS` is a field value
 
-It is currently **1000 ms**, which is for bench testing only. With a 15-byte
-payload at SF9/BW125 each ping occupies ~214 ms of airtime, so a 1 s interval
-means the collar transmits roughly 21% of the time. **Put it back to 5000 ms**
-before it goes anywhere near a 150 mAh battery.
+It is currently **5000 ms**. With a 15-byte payload at SF9/BW125 each ping
+occupies ~214 ms of airtime, so at 1 s the collar transmitted roughly 21% of
+the time and the 150 mAh cell lasted about 5 hours. At 5 s the airtime duty
+cycle is ~4%, giving roughly 16 hours.
+
+The handheld's `RX_TIMEOUT_MS` must stay slightly above this value
+(5200 ms), otherwise the receive window closes before the ping arrives.
+
+### Serial logging is off by default — press `v`
+
+Both boards run with **no serial output** until you send `v` (115200 baud)
+over USB. This is deliberate and load-bearing:
+
+The serial port is native USB CDC. When the board is powered from a power
+bank or wall charger, *nothing drains that port*. An unconditional
+`Serial.print()` therefore fills the CDC buffer and blocks — and because it
+blocks inside the transmit path, the collar stops beaconing altogether. The
+symptom is indistinguishable from a flat battery: the tracker simply goes
+silent minutes after you walk away from it.
+
+This was actually observed, stalling the handheld's main loop for 52 s.
+
+Attach a cable, press `v`, and diagnostics appear. Press `v` again to silence.
+The collar additionally requires `TinyUSBDevice.mounted()` before it writes
+anything, since it normally runs with no USB attached at all.
+
+**For any enclosure or field build, never re-enable unconditional printing.**
 
 ## Power
 

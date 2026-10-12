@@ -242,18 +242,29 @@ bool sendPacket(const char* payload, uint32_t timeoutMs = 3000) {
 }
 
 uint32_t lastPingMs = 0;
+
+// Set true with 'v' on the serial port when debugging.
+//
+// MUST default to false. The collar runs off a LiPo with no USB attached, and
+// in that state nothing drains the CDC buffer. An unguarded Serial.print
+// blocks, and because it blocks inside the transmit path the collar stops
+// beaconing entirely - the failure looks exactly like a dead battery. Both
+// checks matter: verboseLog is what we asked for, mounted() is what is
+// physically possible.
+static bool verboseLog = false;
+
+bool sx1278Present = false;
+uint8_t regVersion = 0;
+
+bool logOk() {
+  return verboseLog && TinyUSBDevice.mounted();
+}
 uint32_t pingCount  = 0;
 
 void setup() {
   Serial.begin(115200);
   unsigned long t0 = millis();
   while (!Serial && millis() - t0 < 2000) delay(10);
-
-  Serial.println();
-  Serial.println(F("====================================="));
-  Serial.println(F(" Cat Tracker - Collar Transmitter"));
-  Serial.println(F(" nRF52840 + RA-02 (SX1278 433MHz)"));
-  Serial.println(F("====================================="));
 
   outMode(P_SCK); outMode(P_MOSI); outMode(P_CS); outMode(P_RST);
   inMode(P_MISO);
@@ -264,15 +275,34 @@ void setup() {
   wr(P_RST, 1); delay(20);
 
   uint8_t v = readReg(0x42);
+  sx1278Present = (v == 0x12);
+  regVersion = v;
+
+  // Detection stays silent. Printing happens before the radio is usable, so a
+  // blocked write here would stop the collar beaconing altogether rather than
+  // merely quieting it. 'v' prints the report afterwards.
+  if (sx1278Present) {
+    radioInit();
+  }
+
+  pinMode(0, INPUT_PULLUP);   // BOOT button -> ping now
+}
+
+// Full status report, emitted on demand by the 'v' serial command.
+void printConfig() {
+  Serial.println();
+  Serial.println(F("====================================="));
+  Serial.println(F(" Cat Tracker - Collar Transmitter"));
+  Serial.println(F(" nRF52840 + RA-02 (SX1278 433MHz)"));
+  Serial.println(F("====================================="));
+
   Serial.print(F("RegVersion = 0x"));
-  Serial.println(v, HEX);
-  if (v != 0x12) {
-    Serial.println(F("SX1278 not detected - check wiring/power"));
-    while (true) delay(1000);
+  Serial.println(regVersion, HEX);
+  if (!sx1278Present) {
+    Serial.println(F("SX1278 NOT detected - check wiring/power"));
+    return;
   }
   Serial.println(F("SX1278 detected, wiring OK"));
-
-  radioInit();
 
   Serial.println(F("Config readback:"));
   printRegCheck();
@@ -284,22 +314,37 @@ void setup() {
   Serial.print(F(" sync=0x"));
   Serial.print(SYNC_WORD, HEX);
   Serial.println();
-  Serial.println(F("Pinging every 5s: CAT-01;bat=100"));
+  Serial.print(F("Pinging every "));
+  Serial.print(PING_INTERVAL_MS / 1000);
+  Serial.println(F("s: CAT-01;bat=100"));
+  Serial.println(F("'v' again to silence."));
   Serial.println();
-
-  pinMode(0, INPUT_PULLUP);   // BOOT button -> ping now
 }
 
 void loop() {
+  // Serial commands are read even with logging off, so a host can turn
+  // diagnostics on over the very cable that is supplying power.
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if ((c == 'v' || c == 'V') && TinyUSBDevice.mounted()) {
+      verboseLog = !verboseLog;
+      if (verboseLog) {
+        printConfig();
+      }
+    }
+  }
+
   // Manual ping on BOOT press
   if (digitalRead(0) == LOW) {
     delay(50);
     while (digitalRead(0) == LOW) delay(10);
     pingCount++;
     bool ok = sendPacket("CAT-01;bat=100");
-    Serial.print(F("[TX] manual ping #"));
-    Serial.print(pingCount);
-    Serial.println(ok ? F(" sent") : F(" TIMEOUT"));
+    if (logOk()) {
+      Serial.print(F("[TX] manual ping #"));
+      Serial.print(pingCount);
+      Serial.println(ok ? F(" sent") : F(" TIMEOUT"));
+    }
     lastPingMs = millis();
     return;
   }
@@ -307,9 +352,11 @@ void loop() {
   if (millis() - lastPingMs >= PING_INTERVAL_MS) {
     pingCount++;
     bool ok = sendPacket("CAT-01;bat=100");
-    Serial.print(F("[TX] ping #"));
-    Serial.print(pingCount);
-    Serial.println(ok ? F(" sent") : F(" TIMEOUT"));
+    if (logOk()) {
+      Serial.print(F("[TX] ping #"));
+      Serial.print(pingCount);
+      Serial.println(ok ? F(" sent") : F(" TIMEOUT"));
+    }
     lastPingMs = millis();
   }
 }

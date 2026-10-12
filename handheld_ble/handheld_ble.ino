@@ -65,6 +65,15 @@ const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
 
 BLECharacteristic* signalChar = nullptr;
 
+// Set true with 'v' on the serial port when debugging.
+//
+// MUST default to false. Serial is native USB CDC, and when the board is
+// powered from a power bank or wall charger nothing ever reads that port. The
+// CDC buffer fills, Serial.print() blocks, and the whole loop stops - taking
+// LoRa receive and BLE notifications down with it. This was observed stalling
+// the loop for 52 s while packets kept arriving unheard.
+static bool verboseLog = false;
+
 float rssiHistory[SMOOTH_N];
 uint8_t rssiIdx = 0, rssiCount = 0;
 float rssiSmoothed = 0.0;
@@ -177,10 +186,12 @@ class SignalCharCb : public BLECharacteristicCallbacks {
         s == BLECharacteristicCallbacks::Status::ERROR_NO_CLIENT) {
       notifyFail++;
     }
-    Serial.print(F("[ble] notify status: "));
-    Serial.print(statusName(s));
-    if (code) { Serial.print(F(" code=")); Serial.print(code); }
-    Serial.println();
+    if (verboseLog) {
+      Serial.print(F("[ble] notify status: "));
+      Serial.print(statusName(s));
+      if (code) { Serial.print(F(" code=")); Serial.print(code); }
+      Serial.println();
+    }
   }
 };
 
@@ -188,12 +199,12 @@ class SignalCharCb : public BLECharacteristicCallbacks {
 class ServerCb : public BLEServerCallbacks {
   void onConnect(BLEServer*) override {
     phoneConnected = true;
-    Serial.println(F("[ble] phone CONNECTED"));
+    if (verboseLog) Serial.println(F("[ble] phone CONNECTED"));
   }
   void onDisconnect(BLEServer* s) override {
     phoneConnected = false;
     phoneSubscribed = false;
-    Serial.println(F("[ble] phone disconnected - advertising again"));
+    if (verboseLog) Serial.println(F("[ble] phone disconnected - advertising again"));
     s->getAdvertising()->start();
   }
 };
@@ -219,18 +230,40 @@ void setupBLE() {
   adv->setScanResponse(true);
   adv->start();
 
-  Serial.println(F("[ble] advertising as CatTracker"));
+  if (verboseLog) Serial.println(F("[ble] advertising as CatTracker"));
 }
 
 bool initRadio() {
   int16_t state = radio.begin(FREQ_MHZ, BANDWIDTH, SPREADING, CODING_R,
                               SYNC_WORD, TX_POWER, PREAMBLE);
   if (state != RADIOLIB_ERR_NONE) {
-    Serial.print(F("[radio] init FAILED code "));
-    Serial.println(state);
+    if (verboseLog) {
+      Serial.print(F("[radio] init FAILED code "));
+      Serial.println(state);
+    }
     return false;
   }
   return true;
+}
+
+void printBanner() {
+  Serial.println();
+  Serial.println(F("====================================="));
+  Serial.println(F(" Cat Tracker - Handheld + BLE"));
+  Serial.println(F("====================================="));
+  Serial.print(F("[radio] online  "));
+  Serial.print(FREQ_MHZ, 1);
+  Serial.print(F(" MHz  SF"));
+  Serial.print(SPREADING);
+  Serial.println(F("  sync=0x12"));
+  Serial.println(F(""));
+  Serial.println(F("BLE diagnostics:"));
+  Serial.println(F("  [ble] phone CONNECTED   -> phone opened the device"));
+  Serial.println(F("  [ble] subscribe event    -> notifications switched on"));
+  Serial.println(F("  [ble] NO SUBSCRIBER      -> notifications attempted, phone not subscribed"));
+  Serial.println(F(""));
+  Serial.println(F("Summary prints every 5s while a phone is attached. 'v' toggles."));
+  Serial.println();
 }
 
 void setup() {
@@ -238,30 +271,11 @@ void setup() {
   pinMode(8, OUTPUT);        // onboard LED, heartbeat
   digitalWrite(8, HIGH);     // active low
 
-  Serial.println();
-  Serial.println(F("====================================="));
-  Serial.println(F(" Cat Tracker - Handheld + BLE"));
-  Serial.println(F("====================================="));
-
+  // No banner here on purpose - see verboseLog. Nothing is printed until 'v'
+  // is sent, so powering the board from a charger can never wedge the loop.
   if (!initRadio()) while (true) delay(1000);
 
-  Serial.print(F("[radio] online  "));
-  Serial.print(FREQ_MHZ, 1);
-  Serial.print(F(" MHz  SF"));
-  Serial.print(SPREADING);
-  Serial.println(F("  sync=0x12"));
-
   setupBLE();
-
-  Serial.println(F("Waiting for collar pings. Notify the phone with signal."));
-  Serial.println(F(""));
-  Serial.println(F("BLE diagnostics:"));
-  Serial.println(F("  [ble] phone CONNECTED   -> phone opened the device"));
-  Serial.println(F("  [ble] subscribe event    -> notifications switched on"));
-  Serial.println(F("  [ble] NO SUBSCRIBER      -> notifications attempted, phone not subscribed"));
-  Serial.println(F(""));
-  Serial.println(F("Serial summary is printed every 5s while a phone is attached."));
-  Serial.println();
 }
 
 // Print a one-line BLE summary so the state is visible without verbose spam.
@@ -285,6 +299,18 @@ void loop() {
   ledOn = !ledOn;
   digitalWrite(8, ledOn ? LOW : HIGH);
 
+  // Serial commands are read even with logging off, so a host can still turn
+  // diagnostics on over a USB cable that is otherwise only supplying power.
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == 'v' || c == 'V') {
+      verboseLog = !verboseLog;
+      if (verboseLog) {
+        printBanner();
+      }
+    }
+  }
+
   int16_t state = radio.receive(rxBuf, sizeof(rxBuf), RX_TIMEOUT_MS);
 
   if (state == RADIOLIB_ERR_NONE) {
@@ -301,32 +327,38 @@ void loop() {
     digitalWrite(8, LOW);
     ledOn = true;
     publishSignal(true);
-    Serial.print(F("[+] pkt #"));
-    Serial.print(packetCount);
-    Serial.print(F("  RSSI "));
-    Serial.print(rssi, 1);
-    Serial.print(F(" dBm  smoothed "));
-    Serial.print(rssiSmoothed, 1);
-    Serial.print(F(" dBm  snr "));
-    Serial.print(snrLast, 1);
-    Serial.print(F(" dB  signal "));
-    Serial.print(rssiToPercent(rssiSmoothed));
-    Serial.println(F("%"));
+    if (verboseLog) {
+      Serial.print(F("[+] pkt #"));
+      Serial.print(packetCount);
+      Serial.print(F("  RSSI "));
+      Serial.print(rssi, 1);
+      Serial.print(F(" dBm  smoothed "));
+      Serial.print(rssiSmoothed, 1);
+      Serial.print(F(" dBm  snr "));
+      Serial.print(snrLast, 1);
+      Serial.print(F(" dB  signal "));
+      Serial.print(rssiToPercent(rssiSmoothed));
+      Serial.println(F("%"));
+    }
   } else if (state == RADIOLIB_ERR_RX_TIMEOUT) {
     // Let the phone know we are still alive but the signal has gone stale.
     if (everHeard && (millis() - lastPacketMs) > STALE_MS) {
       everHeard = false;
-      Serial.println(F("[-] signal stale"));
+      if (verboseLog) {
+        Serial.println(F("[-] signal stale"));
+      }
     }
     publishSignal(false);
   } else {
-    Serial.print(F("[!] receive error "));
-    Serial.println(state);
+    if (verboseLog) {
+      Serial.print(F("[!] receive error "));
+      Serial.println(state);
+    }
   }
 
   // Periodic BLE state so we can see subscription status at a glance.
   static uint32_t lastSummary = 0;
-  if (phoneConnected && millis() - lastSummary > 5000) {
+  if (verboseLog && phoneConnected && millis() - lastSummary > 5000) {
     lastSummary = millis();
     printBleSummary();
   }
