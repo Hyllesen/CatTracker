@@ -44,10 +44,11 @@ const float RSSI_CEIL  = -45.0;   // measured: boards ~3 m apart, strong
 // worth about -32 dB at worst, so nothing below roughly -196 dBm can be
 // produced. Tighten this once a walk log shows where decoding really stops.
 const float RSSI_FLOOR = -180.0;
-// 8 s collar pings, so 4 packets is ~32 s of history. The old 12 packets was
-// tuned against 5 s pings where that was ~60 s; kept at 12 it would span 96 s
-// and the signal bar would feel dead while walking.
-const uint8_t SMOOTH_N = 4;
+// 8 s collar pings, so 12 packets is ~96 s of history. Measured noise floor is
+// only ~0.7 dB, so this smooths multipath spikes; at this interval the bar
+// reacts a little more slowly than it did at 5 s, which is the cost of the
+// longer beacon period.
+const uint8_t SMOOTH_N = 12;
 // Must comfortably exceed one collar ping interval, or a couple of missed
 // packets trip "signal lost" while the collar is perfectly fine.
 const uint32_t STALE_MS = 15000;
@@ -59,6 +60,14 @@ const uint32_t STALE_MS = 15000;
 // from being missed due to scheduling jitter.
 //
 // NOTE: these two boards are coupled - change one interval, change the other.
+// Must match PING_INTERVAL_MS in collar/collar.ino.
+//
+// RX_TIMEOUT_MS is this + 200 because receive() blocks for it, so the window
+// has to cover a full ping period or roughly half of every ping is dropped.
+// The +200 is jitter margin, and the receive() block is also the ONLY thing
+// throttling how often publishSignal() runs - which is why this value also
+// sets the BLE notification rate. Measured clean at both 5s and 8s, so that
+// coupling costs battery without costing reliability.
 const uint32_t COLLAR_PING_MS = 8000;
 const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
 

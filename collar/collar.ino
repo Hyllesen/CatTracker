@@ -124,9 +124,21 @@ const uint8_t BW_125K_RAW = 0x70;  // ModemConfig1 bits 7:4
 const uint8_t SF9_RAW     = 0x90;  // ModemConfig2 bits 7:4
 const uint8_t CR_4_7_RAW  = 0x06;  // ModemConfig1 bits 3:1
 
-// Collar pings this often. 8s with the radio asleep between pings (see
-// radioSleep) and the core idling in loop() gives ~39 h on a 150 mAh cell,
-// against ~16 h before either change.
+// Collar pings this often. Must stay equal to COLLAR_PING_MS in
+// handheld_ble/handheld_ble.ino - see the note there.
+//
+// The handheld publishes to the phone once per received packet, so this value
+// also sets the gap between BLE notifications. That coupling is real but is NOT
+// a link-reliability constraint: both 5s and 8s were measured delivering
+// cleanly (notify_ok climbing every beacon, notify_fail frozen at the count
+// reached before the phone connected). 8s is kept for the battery win.
+//
+// A gap in notifications of tens of seconds is NOT this constant misbehaving.
+// It is the phone having dropped the BLE link - almost always because someone
+// opened the handheld's serial port, which resets the ESP32 and leaves a ghost
+// connection. The app then measures the sparse notifications it does receive
+// and reports a wrong "next in" countdown. Hold the port open for the whole
+// session when testing, as tools do.
 const uint32_t PING_INTERVAL_MS = 8000;
 
 // How long loop() sleeps in one go before servicing the serial port. Long
