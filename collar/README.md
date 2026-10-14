@@ -134,13 +134,48 @@ traffic.
 
 ### `PING_INTERVAL_MS` is a field value
 
-It is currently **5000 ms**. With a 15-byte payload at SF9/BW125 each ping
-occupies ~214 ms of airtime, so at 1 s the collar transmitted roughly 21% of
-the time and the 150 mAh cell lasted about 5 hours. At 5 s the airtime duty
-cycle is ~4%, giving roughly 16 hours.
+It is currently **8000 ms**. With a 15-byte payload at SF9/BW125 each ping
+occupies ~200 ms of airtime. The 150 mAh cell's life is dominated less by
+airtime than by three fixed draws, all since removed — see "Power budget"
+below. History:
 
-The handheld's `RX_TIMEOUT_MS` must stay slightly above this value
-(5200 ms), otherwise the receive window closes before the ping arrives.
+| Interval | Other settings | Life |
+|----------|----------------|------|
+| 1 s | busy loop, radio in standby | ~5 h |
+| 5 s | busy loop, radio in standby | ~16 h |
+| 8 s | idle loop, radio asleep, SAADC gated | **~39 h** |
+
+### Power budget
+
+The three always-on loads are gone. Measured against the same cell:
+
+| Item | Was | Now |
+|------|-----|-----|
+| SX1278 between pings | 1.6 mA in **standby** | 0.2 µA in **sleep** |
+| nRF52840 between pings | ~3.5 mA, spinning `loop()` | ~0.2 mA, System ON idle |
+| SAADC | enabled permanently | enabled only during a read |
+
+The standby → sleep change is the one to not get wrong. The SX1278 datasheet
+lists three similar rows: **sleep 0.2 µA** (`IDDSL`), **idle 1.5 µA**
+(`IDDIDLE`, RC oscillator), **standby 1.6 mA** (`IDDST`, crystal enabled).
+Only the third applies to a radio waiting to transmit, and it is 1000× the
+number the idle row gives.
+
+Waking is `radioInit()` — a full modem re-init on every ping, not a bare
+standby write. Sleep does not retain `RegFifoAddrPtr`, `RegIrqFlags` or
+`RegModemStat`, and a partial re-init would transmit on the previous ping's
+configuration.
+
+`loop()` yields with `delay()` between pings. The core is built with
+`configUSE_TICKLESS_IDLE`, so yielding lets the idle task suppress ticks and
+WFE the core; `millis()` is tick-based and keeps counting correctly across
+suppressed ticks. No separate RTC timebase is needed.
+
+**Changing `PING_INTERVAL_MS` requires changing the handheld with it.** In
+`handheld_ble/handheld_ble.ino`, `RX_TIMEOUT_MS` is derived as
+`COLLAR_PING_MS + 200`, and `receive()` blocks for that long. Leave it at
+5200 ms while the collar pings every 8000 ms and the receiver is asleep for
+3.2 s of every cycle — **roughly half of all pings are dropped**.
 
 ### Serial logging is off by default — press `v`
 
@@ -216,8 +251,14 @@ these clones, containing `CURRENT.uf2`, `INDEX.HTM` and `INFO_UF2.TXT`).
 Flash by dragging a `.uf2` onto it — no port selection needed.
 
 **LED tell:** the bootloader makes the status LED *fade*; the running
-application makes it *blink*. A steadily blinking blue LED is the app, not the
-bootloader.
+application leaves it dark. **No LED means you have just come out of the
+bootloader — check that the application is actually running before suspecting
+anything else.** The only light the application ever turns on is the
+USB-connected indicator, which appears when a cable is attached and gives a
+brief flash at the instant battery power is applied. A blinking blue LED has
+been seen on the bench and recorded as "the app", but that was with USB
+attached; nothing in the sketch drives an LED (`git log -S"LED" --
+collar/collar.ino` has no commits).
 
 ### Battery sense: `029` → app
 
@@ -291,18 +332,28 @@ Until that pin is wired, the collar reports `--` and the app shows
 **`battery --`**. That is deliberate: a false low-battery warning on a cat
 tracker is worse than no warning at all, because it trains you to ignore it.
 
-The cell is sampled every 10 min in production (every 5 s in `DEV_MODE`),
-leaving the SAADC idle between reads.
+The cell is sampled every 10 min in production (every 5 s in `DEV_MODE`). The
+SAADC is enabled only for the duration of the read — `analogRead()` leaves it
+enabled, and an enabled-but-idle SAADC draws a few hundred µA, which would
+otherwise be a permanent load.
 
 ## Power
 
-**The collar will not run reliably from a power bank.** It draws only ~9 mA
-average, and most power banks switch themselves off below a 50–100 mA load
-threshold. It then appears to die after a minute or two.
+The collar draws **~2.9 mA average** at an 8 s interval, down from ~9.4 mA.
+See "Power budget" above for what changed.
 
-Use a **USB wall charger** for field tests, or a bank with an "always on" mode.
-The handheld does not have this problem — it draws more (BLE + RX + a blinking
-LED), enough to keep the same banks awake.
+**A power bank is now even less likely to work.** Most banks switch themselves
+off below a 50–100 mA load threshold, and the collar's *peak* draw is the
+~87 mA transmit burst — gone in 200 ms, every 8 s. Use a **USB wall charger**
+for field tests, or a bank with an "always on" mode.
+
+If you ever put a meter on it, measure **in series with the cell, not on
+VBUS**. The USB-connected LED and the USB PHY are both extra load that a
+LiPo run never sees, so a VBUS reading overstates field draw — and the gap
+widens as the power budget improves.
+
+The handheld does not have this problem — it draws far more (BLE + continuous
+RX), enough to keep the same banks awake.
 
 Both boards are happiest on USB for bench work.
 
@@ -351,7 +402,7 @@ The RA-02 is wired to arbitrary nRF pins, not the hardware SPI peripheral, so
 the firmware toggles the pins directly. Two consequences worth knowing:
 
 - **SPI is slow** (~2 µs per bit). This is irrelevant for a 15-byte packet sent
-  once per second.
+  once every 8 seconds.
 - **Register writes must be field-by-field, never whole-byte.** The SX1278
   powers up with bits set that matter. Writing a full byte zeroes them and the
   receiver fails with `RADIOLIB_ERR_LORA_HEADER_DAMAGED` (-24). The collar's
