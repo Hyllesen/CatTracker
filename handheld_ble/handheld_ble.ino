@@ -44,7 +44,10 @@ const float RSSI_CEIL  = -45.0;   // measured: boards ~3 m apart, strong
 // worth about -32 dB at worst, so nothing below roughly -196 dBm can be
 // produced. Tighten this once a walk log shows where decoding really stops.
 const float RSSI_FLOOR = -180.0;
-const uint8_t SMOOTH_N = 12;
+// 8 s collar pings, so 4 packets is ~32 s of history. The old 12 packets was
+// tuned against 5 s pings where that was ~60 s; kept at 12 it would span 96 s
+// and the signal bar would feel dead while walking.
+const uint8_t SMOOTH_N = 4;
 // Must comfortably exceed one collar ping interval, or a couple of missed
 // packets trip "signal lost" while the collar is perfectly fine.
 const uint32_t STALE_MS = 15000;
@@ -56,7 +59,7 @@ const uint32_t STALE_MS = 15000;
 // from being missed due to scheduling jitter.
 //
 // NOTE: these two boards are coupled - change one interval, change the other.
-const uint32_t COLLAR_PING_MS = 5000;
+const uint32_t COLLAR_PING_MS = 8000;
 const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
 
 // ---- BLE ----
@@ -66,7 +69,7 @@ const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
 
 // Signal packet, 8 bytes, little-endian. One notification per update so the
 // phone has everything it needs to draw the UI and pick a tone.
-//   [0]     flags  bit0 = fresh packet, bit1 = stale (>8s since last),
+//   [0]     flags  bit0 = fresh packet, bit1 = stale (>15s since last),
 //                   bit2 = at least one packet has been heard
 //   [1..2]  RSSI * 10, int16 dBm - real reading whenever bit2 is set
 //   [3..4]  SNR  * 10, int16 dB

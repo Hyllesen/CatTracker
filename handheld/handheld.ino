@@ -55,10 +55,14 @@ const uint16_t PREAMBLE   = 8;
 // active buzzer). These bounds are the measured desk (-34) to detection edge.
 const float RSSI_CEIL  = -40.0;   // ~arm's length
 const float RSSI_FLOOR = -75.0;   // below this the signal is not trustworthy
-// 12 packets ~= 12s of collar pings. Measured noise floor is only ~0.7dB, so
-// this smooths multipath spikes without feeling laggy when you start walking.
-const uint8_t SMOOTH_N  = 12;
-const uint32_t STALE_MS = 8000;
+// 4 packets ~= 32s of collar pings (8s interval). Measured noise floor is only
+// ~0.7dB, so this smooths multipath spikes without feeling laggy when you
+// start walking.
+const uint8_t SMOOTH_N  = 4;
+// Must comfortably exceed one collar ping interval, or a couple of missed
+// packets trip "signal lost" while the collar is perfectly fine. At 8s pings
+// the old 8000 would fire on almost every cycle.
+const uint32_t STALE_MS = 16000;
 
 // ---- Audio feedback ----
 // Two buzzer types need different handling, so the mode is switchable at
