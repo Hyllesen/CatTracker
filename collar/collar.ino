@@ -7,6 +7,25 @@
 #include <nrf.h>
 
 // ---------------------------------------------------------------------------
+// Build mode
+// ---------------------------------------------------------------------------
+// Compile with -DDEV_MODE for development (fast diagnostics, battery every 5s).
+// Normal build = production (battery every 10 min).
+//
+//   arduino-cli compile --fqbn "adafruit:nrf52:feather52840" \
+//     --build-property "compiler.cpp.extra_flags=-DDEV_MODE" \
+//     collar/collar.ino
+//
+// Or add -DDEV_MODE to the extra-flags field in Arduino IDE preferences.
+#ifndef DEV_MODE
+#define DEV_MODE 0
+#else
+#undef DEV_MODE
+#define DEV_MODE 1
+#endif
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Cat collar transmitter - TENSTAR ROBOT nRF52840 Pro Micro + RA-02 (SX1278)
 //
 // Uses bit-banged SPI on the pins already wired to the RA-02. No DIO0 is
@@ -105,19 +124,20 @@ const uint8_t BW_125K_RAW = 0x70;  // ModemConfig1 bits 7:4
 const uint8_t SF9_RAW     = 0x90;  // ModemConfig2 bits 7:4
 const uint8_t CR_4_7_RAW  = 0x06;  // ModemConfig1 bits 3:1
 
-// 1s while bench-testing RSSI: at 5s the handheld only gets one sample per 5m
-// of walking. Put this back to 5000 before running on battery - it quadruples
-// transmit energy use, which matters on a 150mAh collar.
+// Collar pings this often. 5s gives ~16 h on a 150 mAh cell.
 const uint32_t PING_INTERVAL_MS = 5000;
 
 // ---------------------------------------------------------------------------
 // Battery sense
 // ---------------------------------------------------------------------------
 // Wire the cell's POSITIVE terminal to BATT_PIN through a resistor divider.
-// Two equal resistors give the 1:2 below, which keeps a 4.2V cell (3.0V ADC
-// reference) comfortably inside range and costs only ~2uA, against ~10mA for
-// the radio. Use 1M + 1M: a 10k pair would draw 210uA and cost ~3mAh over a
-// 16h run, which is real on a 150mAh cell.
+// Two equal resistors give the 1:2 below, which keeps a 4.2V cell (3.6V ADC
+// reference) comfortably inside range and costs ~20uA, against ~10mA for
+// the radio. Use 100k + 100k: a 10k pair would draw 210uA and cost ~3mAh
+// over a 16h run, which is real on a 150mAh cell. The 50kΩ Thevenin
+// impedance keeps the SAADC's sampling cap settled within the core's
+// default 3 µs acquisition time (datasheet limit 10kΩ is reached with the
+// 100nF reservoir cap); 1MΩ would be 5× over and read ~7% low.
 //
 // BATT_PIN is an ARDUINO PIN INDEX, not the raw port number printed on the
 // silkscreen. analogRead() maps the index through the core's pin table, and
@@ -134,14 +154,24 @@ const uint32_t PING_INTERVAL_MS = 5000;
 // the ADC.
 const uint8_t BATT_PIN = 20;          // Arduino index for P0.29 (silkscreen "029")
 const float   BATT_DIVIDER = 2.0f;    // equal high/low resistors
-const float   VREF_MV = 3300.0f;
+// The core configures the SAADC with RESP=Bypass and pre-gain 6, giving a
+// full-scale of 0.6V bandgap × 6 = 3.6V. Not VDD (3.3V) — using 3300 here
+// made every reading 8.3% low.
+const float   VREF_MV = 3600.0f;
 // The core runs the SAADC with RESP set to Bypass, so its result is NOT scaled
 // to VDD the way a normal conversion is. Asking for 12-bit does not give more
 // precision here - it gives a 10-bit value wearing a 12-bit label. Left at the
 // core's default 10-bit, 2.03V at the pin reads 629, which matches a
 // multimeter. Do not raise this without re-checking the scale.
 const float   ADC_MAX = 1023.0f;     // 10-bit, core default
-const uint32_t BATT_SAMPLE_MS = 60000;
+
+#if DEV_MODE
+// Development: battery every 5 s so voltage changes are visible immediately.
+const uint32_t BATT_SAMPLE_MS = 5000;
+#else
+// Production: battery every 10 min to minimise SAADC power draw.
+const uint32_t BATT_SAMPLE_MS = 600000;
+#endif
 
 // Charge curve for a single-cell LiPo, open-circuit, at a light load. A cell
 // sagging under load reads lower than these points, which is the safe
@@ -164,7 +194,14 @@ uint8_t readBatteryPercent() {
   for (uint8_t i = 0; i < 6; i++) {
     battRaw[i] = analogRead(BATT_PIN);
   }
-  uint32_t raw = battRaw[0];
+  // The first SAADC reading is unreliable — the internal reference and
+  // charge pump have not settled, so it is typically low. Average all six
+  // to cancel out that warm-up artefact and random noise.
+  uint32_t raw = 0;
+  for (uint8_t i = 0; i < 6; i++) {
+    raw += battRaw[i];
+  }
+  raw = raw / 6;
   batteryMv = (raw * VREF_MV / ADC_MAX) * BATT_DIVIDER;
 
   // A pin that is not wired reads the pin's own leakage floor; treat anything

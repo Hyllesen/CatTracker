@@ -233,20 +233,26 @@ uses `002`, `011`, `013`, `015` and `031`.
 ```
    cell +            "B+" pad
       │
-     [1M]  R1
+     [100k]  R1
       │
       ├──────────────  "029" pad   ← net B, the junction
       │
-     [1M]  R2
+     [100k]  R2
       │
    cell −            "B-" pad
       │
     "GND" pad                     ← net C, also the cell negative
 ```
 
+A **100 nF capacitor from `029` to GND** is required. It acts as a local charge
+reservoir for the SAADC's sampling cap. Without it, the 50 kΩ source impedance
+means the ADC's internal cap does not fully charge during the 3 µs acquisition
+window, and the reading is consistently ~7% low. Place it as close to the `029`
+and GND pads as practical.
+
 Resistors are not polarised — orientation does not matter.
 
-**Four solder joints, no more:**
+**Five solder joints, no more:**
 
 | # | From | To |
 |---|------|-----|
@@ -254,6 +260,7 @@ Resistors are not polarised — orientation does not matter.
 | 2 | cell `−` | `B-` pad |
 | 3 | **R1** | one leg to `B+`, other leg to `029` |
 | 4 | **R2** | one leg to `029`, other leg to any `GND` pad |
+| 5 | **100 nF cap** | one leg to `029`, other leg to any `GND` pad |
 
 `R2`'s free leg goes to a `GND` pad rather than `B-` because those two are
 **already the same net inside the board** — the cell negative and the system
@@ -264,11 +271,13 @@ What matters is that `029` ends up touching **three** things: R1's leg, R2's
 leg, and the pad. That shared junction is what makes this a divider instead of
 a wire.
 
-Two equal 1 MΩ resistors give the 1:2 the firmware expects. That divides
-4.2 V down to 2.1 V, inside the 3.0 V ADC reference, and costs only ~2 µA
-against ~10 mA for the radio. **Do not substitute a 10 KΩ pair**: that draws
+Two equal 100 kΩ resistors give the 1:2 the firmware expects. That divides
+4.2 V down to 2.1 V, inside the 3.6 V ADC full-scale (0.6 V bandgap × 6
+gain, the core's default SAADC config), and costs ~20 µA against ~10 mA for
+the radio. **Do not substitute a 10 kΩ pair**: that draws
 210 µA and costs roughly 3 mAh over a 16-hour run, which is real on a 150 mAh
-cell.
+cell. 100 kΩ is 10× below that trap and 10× lower impedance than 1 MΩ,
+which is what keeps the ADC reading within ~1% of a multimeter.
 
 **Verify by the reading, not by trusting the pin number:**
 
@@ -282,8 +291,8 @@ Until that pin is wired, the collar reports `--` and the app shows
 **`battery --`**. That is deliberate: a false low-battery warning on a cat
 tracker is worse than no warning at all, because it trains you to ignore it.
 
-The cell is sampled once a minute, not every 5 s ping, leaving the SAADC idle
-between reads.
+The cell is sampled every 10 min in production (every 5 s in `DEV_MODE`),
+leaving the SAADC idle between reads.
 
 ## Power
 
@@ -302,9 +311,24 @@ Both boards are happiest on USB for bench work.
 Board **Adafruit Feather nRF52840 Express**, then upload `collar/collar.ino`.
 Serial Monitor at **115200 baud**.
 
-```
+The collar supports two build modes — controlled by a compile-time flag:
+
+| Mode | `BATT_SAMPLE_MS` | Use case |
+|------|------------------|----------|
+| **production** (default) | 10 min | Battery life; normal field use |
+| **development** (`DEV_MODE`) | 5 s | Debugging; see voltage changes immediately |
+
+```bash
+# Production (default)
 arduino-cli upload --fqbn "adafruit:nrf52:feather52840" \
                    --port /dev/cu.usbmodemXXXXXX collar/collar.ino
+
+# Development (battery every 5 s)
+arduino-cli compile --fqbn "adafruit:nrf52:feather52840" \
+                    --build-property "compiler.cpp.extra_flags=-DDEV_MODE" \
+                    collar/collar.ino
+arduino-cli upload -p /dev/cu.usbmodemXXXXXX --fqbn "adafruit:nrf52:feather52840" \
+                   collar/collar.ino
 ```
 
 ⚠️ **USB ports swap between the two boards.** With both plugged in, `/dev/cu.usbmodem*`
