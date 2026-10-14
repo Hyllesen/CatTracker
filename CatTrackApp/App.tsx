@@ -131,7 +131,7 @@ function verdict(signal: Signal): {text: string; tone: string} {
 
 /** Fallback beacon period before any have been observed, matches the collar's
  *  PING_INTERVAL_MS. Replaced by the measured cadence once two beeps land. */
-const DEFAULT_BEEP_MS = 5000;
+const DEFAULT_BEEP_MS = 8000;
 /** How long the indicator stays lit after a beep. */
 const PULSE_MS = 500;
 /** Intervals kept for the median. A median rather than a mean because the

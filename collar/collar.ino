@@ -124,8 +124,27 @@ const uint8_t BW_125K_RAW = 0x70;  // ModemConfig1 bits 7:4
 const uint8_t SF9_RAW     = 0x90;  // ModemConfig2 bits 7:4
 const uint8_t CR_4_7_RAW  = 0x06;  // ModemConfig1 bits 3:1
 
-// Collar pings this often. 5s gives ~16 h on a 150 mAh cell.
-const uint32_t PING_INTERVAL_MS = 5000;
+// Collar pings this often. Must stay equal to COLLAR_PING_MS in
+// handheld_ble/handheld_ble.ino - see the note there.
+//
+// The handheld publishes to the phone once per received packet, so this value
+// also sets the gap between BLE notifications. That coupling is real but is NOT
+// a link-reliability constraint: both 5s and 8s were measured delivering
+// cleanly (notify_ok climbing every beacon, notify_fail frozen at the count
+// reached before the phone connected). 8s is kept for the battery win.
+//
+// A gap in notifications of tens of seconds is NOT this constant misbehaving.
+// It is the phone having dropped the BLE link - almost always because someone
+// opened the handheld's serial port, which resets the ESP32 and leaves a ghost
+// connection. The app then measures the sparse notifications it does receive
+// and reports a wrong "next in" countdown. Hold the port open for the whole
+// session when testing, as tools do.
+const uint32_t PING_INTERVAL_MS = 8000;
+
+// How long loop() sleeps in one go before servicing the serial port. Long
+// enough that tick suppression actually saves power, short enough that a
+// 'v' typed at the bench is answered promptly.
+const uint32_t IDLE_SLICE_MS = 250;
 
 // ---------------------------------------------------------------------------
 // Battery sense
@@ -191,9 +210,16 @@ float batteryMv = 0.0f;
 uint32_t battRaw[6];
 
 uint8_t readBatteryPercent() {
+  // analogRead() enables the SAADC on every call (wiring_analog_nRF52.c:188,
+  // in analogRead_internal) and never disables it again, so the peripheral is
+  // left powered between reads, drawing a few hundred uA of bias current. In
+  // production this function runs once every 10 minutes, which would make that
+  // draw permanent. Disable it here rather than before the reads, so the
+  // core's own enable stays the only thing turning it on.
   for (uint8_t i = 0; i < 6; i++) {
     battRaw[i] = analogRead(BATT_PIN);
   }
+  NRF_SAADC->ENABLE = 0;
   // The first SAADC reading is unreliable — the internal reference and
   // charge pump have not settled, so it is typically low. Average all six
   // to cancel out that warm-up artefact and random noise.
@@ -333,7 +359,22 @@ void printRegCheck() {
   Serial.println(readReg(REG_PA_CONFIG), HEX);
 }
 
+// Park the radio in sleep between pings. Standby with the crystal running
+// costs 1.6 mA continuously (datasheet IDDST), and the collar spends ~96% of
+// its life between packets, so leaving it in standby dominated the whole
+// budget. Sleep is 0.2 uA (IDDSL) - three orders of magnitude cheaper.
+//
+// This is LoRa sleep (modem bit 7 set, mode bits 00), not FSK sleep. Waking
+// is handled by radioInit(), which always rewrites the full modem register
+// set rather than trusting that sleep retained it: RegFifoAddrPtr,
+// RegIrqFlags and RegModemStat are among the registers that do not survive.
+void radioSleep() {
+  writeReg(REG_OP_MODE, 0x80 | 0x00);   // LoRa | sleep
+}
+
 // Transmit one packet; returns true if TxDone was observed before timeout.
+//
+// Assumes the radio is awake. loop() calls radioInit() before this.
 bool sendPacket(const char* payload, uint32_t timeoutMs = 3000) {
   uint8_t len = strlen(payload);
 
@@ -438,8 +479,16 @@ void printConfig() {
   }
   Serial.println(F("SX1278 detected, wiring OK"));
 
+  // The radio sleeps between pings, and the SX1278 cannot be read over SPI in
+  // sleep mode — every register would come back 0x00 or stale. Wake it for the
+  // dump and put it back to sleep afterwards. This costs ~3 ms and only ever
+  // runs on an explicit 'v', which is a bench activity anyway.
+  radioInit();
+
   Serial.println(F("Config readback:"));
   printRegCheck();
+
+  radioSleep();
 
   Serial.print(F("TX ready. Freq="));
   Serial.print(FREQ_MHZ, 1);
@@ -476,8 +525,9 @@ void loop() {
   if (millis() - lastPingMs >= PING_INTERVAL_MS) {
     pingCount++;
 
-    // Sample the cell once a minute rather than every ping. The SAADC is left
-    // idle in between, and the cell cannot change meaningfully in 5s.
+    // Sample the cell on its own much slower schedule than the pings. The
+    // SAADC is enabled only for the duration of the read, and the cell cannot
+    // change meaningfully in the few seconds between pings.
     if (millis() - lastBattMs >= BATT_SAMPLE_MS) {
       lastBattMs = millis();
       batteryPct = readBatteryPercent();
@@ -500,14 +550,52 @@ void loop() {
       }
     }
 
+    // Wake the radio from sleep. radioInit() rather than a bare standby
+    // write, because sleep does not retain the FIFO pointers or the modem
+    // registers and a partial re-init would transmit on last ping's config.
+    radioInit();
+
     char payload[24];
     buildPayload(payload, sizeof(payload));
     bool ok = sendPacket(payload);
+    radioSleep();
     if (logOk()) {
       Serial.print(F("[TX] ping #"));
       Serial.print(pingCount);
       Serial.println(ok ? F(" sent") : F(" TIMEOUT"));
     }
     lastPingMs = millis();
+  }
+
+  // Sleep until the next ping is due.
+  //
+  // Without this the loop spins on millis() for the whole interval, the
+  // FreeRTOS idle task never gets to run, and the core stays in System ON
+  // *running* at 64 MHz - roughly 3.5 mA, a third of the entire budget.
+  //
+  // delay() is vTaskDelay() (delay.c:48), so yielding here lets the idle task
+  // suppress ticks under configUSE_TICKLESS_IDLE (FreeRTOSConfig.h:52) and
+  // WFE the core into System ON idle. millis() is tick2ms(xTaskGetTickCount())
+  // (delay.c:30), so it keeps counting correctly across suppressed ticks and
+  // the schedule below needs no separate RTC timebase.
+  //
+  // Sleeping in slices rather than one long delay keeps serial responsive:
+  // a 'v' arriving mid-interval is picked up within IDLE_SLICE_MS.
+  if (!sx1278Present) {
+    delay(PING_INTERVAL_MS);
+    return;
+  }
+  while (millis() - lastPingMs < PING_INTERVAL_MS) {
+    uint32_t remaining = PING_INTERVAL_MS - (millis() - lastPingMs);
+    delay(remaining < IDLE_SLICE_MS ? remaining : IDLE_SLICE_MS);
+    while (Serial.available()) {
+      char c = (char)Serial.read();
+      if ((c == 'v' || c == 'V') && TinyUSBDevice.mounted()) {
+        verboseLog = !verboseLog;
+        if (verboseLog) {
+          printConfig();
+        }
+      }
+    }
   }
 }

@@ -2,7 +2,7 @@
  * Signal model decoded from the handheld's BLE notification packet.
  *
  * Wire format (8 bytes, little-endian) produced by handheld_ble/handheld_ble.ino:
- *   [0]     flags      bit0 = fresh packet, bit1 = stale (>8s since last),
+ *   [0]     flags      bit0 = fresh packet, bit1 = stale (>15s since last),
  *                      bit2 = at least one packet heard
  *   [1..2]  RSSI * 10  int16 dBm   (real reading whenever bit2 is set)
  *   [3..4]  SNR * 10   int16 dB

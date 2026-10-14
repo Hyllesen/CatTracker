@@ -26,7 +26,7 @@ Secondary, for the Nice!Nano/Pro Micro clones these boards are based on:
 | Bootloader appears as | USB mass storage (`NICENANO` on clones; `CURRENT.uf2`, `INDEX.HTM`, `INFO_UF2.TXT`) |
 | Flashing | Drag a `.uf2` onto the drive, or `arduino-cli` over USB CDC |
 | Power pins | `B-`, `B+`, `RAW`, `GND`, `RST`, `VCC` |
-| Bootloader LED tell | **Fades** in bootloader; the application **blinks** |
+| Bootloader LED tell | **Fades** in bootloader; the application leaves it **dark** |
 
 There is no BOOT button to press on this board — the `RST`-to-`GND` double
 short is the way in, and it is why bootloader entry looked unavailable.
