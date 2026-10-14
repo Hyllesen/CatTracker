@@ -10,5 +10,9 @@
 antenna-test-*.csv
 walk-*.csv
 
+# Python bytecode cache, regenerated every time a tool runs.
+__pycache__/
+*.pyc
+
 # macOS
 .DS_Store
