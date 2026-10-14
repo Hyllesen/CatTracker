@@ -165,6 +165,10 @@ class Run:
     def __init__(self, length, note=""):
         self.length = length
         self.note = note
+        # Every packet seen during this run, including the warmup ones that
+        # are not kept. The warmup decision must be made against this, not
+        # against len(rssi) - see the reader.
+        self.nseen = 0
         self.rssi = []
         self.snr_last = None
 
@@ -216,39 +220,61 @@ class Meter:
                 if rssis:
                     self.last_rssi = float(rssis[-1])
                     if self.cur is not None:
-                        # Skip the first packets after a trim: they straddle
+                        # Discard the first packets after a trim: they straddle
                         # two antenna lengths and mean nothing.
-                        if len(self.cur.rssi) >= self.warmup:
+                        #
+                        # Count packets SEEN, not samples stored. Testing
+                        # len(self.cur.rssi) >= self.warmup here can never be
+                        # true, because rssi only grows once the test passes -
+                        # so with the default warmup of 3 the run collected
+                        # nothing, ever, while the display still showed the
+                        # latest RSSI and looked alive.
+                        self.cur.nseen += 1
+                        if self.cur.nseen > self.warmup:
                             self.cur.rssi.append(float(rssis[-1]))
                             if snrs:
                                 self.cur.snr_last = float(snrs[-1])
-                    self._draw()
+                    self._print_sample()
 
-    def _draw(self):
+    def _print_sample(self):
+        """Print one row per received reading and let it stay on screen.
+
+        The previous display rewrote a single line in place with \\r, so only
+        the newest reading was ever visible and it looked frozen between
+        packets. Antenna trimming wants the spread: individual readings side
+        by side show the multipath wobble a mean hides, which is part of what
+        you are judging when you move a radiator around.
+
+        Warmup packets are printed too, tagged, rather than silently dropped -
+        otherwise the run appears stalled for the first few seconds and there
+        is no way to tell that from a dead collar.
+        """
         run = self.cur
         r = self.last_rssi
-        snr = self.last_snr
         if r is None:
-            line = "  waiting for packets..."
+            return
+        snr = self.last_snr
+        snr_txt = "snr %+5.1f" % snr if snr is not None else "snr      -"
+
+        if run is None:
+            sys.stdout.write("  pkt %3d  %7.1f dBm  %s   (no run open - "
+                             "type 's <mm>')\n" % (self.pkt, r, snr_txt))
+            sys.stdout.flush()
+            return
+
+        have = len(run.rssi)          # post-warmup samples kept so far
+        need = self.min_packets
+        bar_w = 16
+        filled = int(bar_w * min(have, need) / max(need, 1))
+        bar = "#" * filled + "." * (bar_w - filled)
+
+        if run.nseen <= self.warmup:
+            mean_txt = "   warmup, not counted  "
         else:
-            rssi_txt = "%7.1f dBm" % r
-            snr_txt = "  snr %+5.1f" % snr if snr is not None else ""
-            if run is not None:
-                have = max(0, len(run.rssi) - self.warmup)
-                need = self.min_packets
-                bar_w = 16
-                filled = int(bar_w * min(have, need) / max(need, 1))
-                bar = "#" * filled + "." * (bar_w - filled)
-                prog = "  [%s %2d/%-2d]" % (bar, have, need)
-                line = "  last %s%s   mean %s%s%s" % (
-                    rssi_txt, snr_txt,
-                    "%7.1f dBm" % run.mean() if run.rssi else "   n/a ",
-                    prog,
-                    "  run=%s mm" % run.length)
-            else:
-                line = "  last %s%s   (no run open - type 's <mm>')" % (
-                    rssi_txt, snr_txt)
-        sys.stdout.write("\r\033[K" + line)
+            mean_txt = "mean %7.1f dBm" % run.mean()
+
+        sys.stdout.write("  %3d  %7.1f dBm  %s  %s  [%s %2d/%-2d]\n" % (
+            run.nseen, r, snr_txt, mean_txt, bar, have, need))
         sys.stdout.flush()
 
     def _silence_watch(self):
@@ -258,10 +284,11 @@ class Meter:
                     and not self._silenced):
                 with self.lock:
                     self._silenced = True
-                    sys.stdout.write("\r\033[K")
+                    # No \r here: readings scroll now, so this is just another
+                    # line in the log rather than an overwrite.
                     sys.stdout.write(
-                        "  no packet for %ds - the collar pings every 5s, so "
-                        "check it is powered and within range\n"
+                        "  -- no packet for %ds - the collar pings every 5s, "
+                        "so check it is powered and within range\n"
                         % SILENCE_S)
                     sys.stdout.flush()
 
@@ -385,8 +412,23 @@ def wait_for_console(ser, timeout=15.0):
     deadline = time.monotonic() + timeout
     buf = b""
     sent_x = False
+    glitches = 0
     while time.monotonic() < deadline:
-        chunk = ser.read(ser.in_waiting or 1)
+        try:
+            chunk = ser.read(ser.in_waiting or 1)
+        except serial.SerialException:
+            # The USB node can report "ready to read" and then hand back
+            # nothing - seen just after opening, and when another process has
+            # the port. Tolerate a few rather than dying with a traceback.
+            glitches += 1
+            if glitches > 200:
+                sys.stdout.write(
+                    "\n  the serial port keeps failing - another program "
+                    "probably has it open.\n")
+                sys.stdout.flush()
+                return False
+            time.sleep(0.05)
+            continue
         if chunk:
             buf += chunk
             if ready(buf):
@@ -519,6 +561,10 @@ def main():
                     if hint:
                         print("  -> %s" % hint)
                 print("  Now measuring %s mm ..." % fmt_len(length))
+                sys.stdout.write(
+                    "     #  rssi      snr      running mean      "
+                    "progress\n")
+                sys.stdout.flush()
                 continue
             if cmd == "n":
                 if meter.cur is None:
