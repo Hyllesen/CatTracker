@@ -2,10 +2,11 @@
  * Signal model decoded from the handheld's BLE notification packet.
  *
  * Wire format (8 bytes, little-endian) produced by handheld_ble/handheld_ble.ino:
- *   [0]     flags      bit0 = fresh packet, bit1 = stale (>8s since last)
- *   [1..2]  RSSI * 10  int16 dBm   (-254 => -25.4 dBm, -1270 => no data)
+ *   [0]     flags      bit0 = fresh packet, bit1 = stale (>8s since last),
+ *                      bit2 = at least one packet heard
+ *   [1..2]  RSSI * 10  int16 dBm   (real reading whenever bit2 is set)
  *   [3..4]  SNR * 10   int16 dB
- *   [5]     signal     0..100
+ *   [5]     signal     0..100, spanning -45 dBm (close) to -180 dBm (floor)
  *   [6]     age        seconds since last packet (capped 255)
  *   [7]     battery    collar cell 0..100, or 255 when unwired/unknown
  */
@@ -16,6 +17,7 @@ export const DEVICE_NAME = 'CatTracker';
 
 export const FLAG_FRESH = 0x01;
 export const FLAG_STALE = 0x02;
+export const FLAG_HAVE = 0x04;
 
 /** Byte value the firmware sends for "battery pin not wired / no reading". */
 export const BATTERY_UNKNOWN = 255;
@@ -66,8 +68,12 @@ export function decodeSignal(bytes: Uint8Array | null): Signal | null {
   const percent = bytes[5];
   const ageSeconds = bytes[6];
 
-  // -127.0 dBm is the sentinel the firmware sends before any packet is heard.
-  const rssi = rssiRaw <= -1270 ? null : rssiRaw / 10;
+  // "Never heard the collar" arrives as FLAG_HAVE, not as a magic RSSI value.
+  // The firmware used to send -127 dBm as that sentinel, which sat in the
+  // middle of the range the radio genuinely decodes to and silently swallowed
+  // every weak reading - the handheld reached -140 dBm in field testing and
+  // the app treated all of it as "no data".
+  const rssi = (flags & FLAG_HAVE) !== 0 ? rssiRaw / 10 : null;
 
   return {
     rssi,

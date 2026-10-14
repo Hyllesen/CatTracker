@@ -32,8 +32,18 @@ const int8_t  TX_POWER   = 17;
 const uint16_t PREAMBLE   = 8;
 
 // ---- Signal quality ----
-const float RSSI_CEIL  = -40.0;   // measured: ~arm's length
-const float RSSI_FLOOR = -75.0;   // measured: below this, untrustworthy
+const float RSSI_CEIL  = -45.0;   // measured: boards ~3 m apart, strong
+// Field testing decoded packets down to -140 dBm before the walk was turned
+// back, so the old -75 floor mapped the entire far field to 0% and therefore
+// to silence - exactly the range where guidance matters most.
+//
+// This is a conservative stand-in for a floor we have not actually measured.
+// The arithmetic limit is knowable though: at <868 MHz RadioLib reports
+// RSSI = -164 + PktRssiValue, then adds a negative SNR to correct for LoRa
+// decoding below the noise floor. PktRssiValue is 8-bit unsigned and SNR is
+// worth about -32 dB at worst, so nothing below roughly -196 dBm can be
+// produced. Tighten this once a walk log shows where decoding really stops.
+const float RSSI_FLOOR = -180.0;
 const uint8_t SMOOTH_N = 12;
 // Must comfortably exceed one collar ping interval, or a couple of missed
 // packets trip "signal lost" while the collar is perfectly fine.
@@ -54,14 +64,19 @@ const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
 #define SIGNAL_UUID  "8e7a1b21-3f4d-4c8e-9a1f-2b6d5e4c3a21"
 #define DEVICE_NAME  "CatTracker"
 
-// Signal packet, 7 bytes, little-endian. One notification per update so the
+// Signal packet, 8 bytes, little-endian. One notification per update so the
 // phone has everything it needs to draw the UI and pick a tone.
-//   [0]     flags  bit0 = fresh packet, bit1 = stale (>8s since last)
-//   [1..2]  RSSI * 10, int16 dBm
+//   [0]     flags  bit0 = fresh packet, bit1 = stale (>8s since last),
+//                   bit2 = at least one packet has been heard
+//   [1..2]  RSSI * 10, int16 dBm - real reading whenever bit2 is set
 //   [3..4]  SNR  * 10, int16 dB
 //   [5]     signal strength 0..100
 //   [6]     seconds since last packet (capped 255)
+//   [7]     collar battery, 255 = unknown
 #define SIGNAL_PKT_LEN 8
+#define FLAG_FRESH 0x01
+#define FLAG_STALE 0x02
+#define FLAG_HAVE  0x04   // "never heard the collar" is flagged, not a value
 
 BLECharacteristic* signalChar = nullptr;
 
@@ -141,8 +156,14 @@ void publishSignal(bool fresh) {
   bool stale = everHeard && (millis() - lastPacketMs) > STALE_MS;
   lastPublishMs = millis();
 
-  pkt[0] = (fresh ? 0x01 : 0x00) | (stale ? 0x02 : 0x00);
-  int16_t r10 = (int16_t)((have ? rssiSmoothed : -127.0f) * 10.0f);
+  pkt[0] = (fresh ? FLAG_FRESH : 0x00) | (stale ? FLAG_STALE : 0x00)
+         | (have ? FLAG_HAVE : 0x00);
+  // No sentinel RSSI value. "Never heard the collar" is carried by FLAG_HAVE,
+  // so [1..2] is always a real reading. This matters because the old sentinel
+  // was -127 dBm: with the floor now at -180, every genuine reading between
+  // -127 and -180 would have been decoded by the phone as "no data" and gone
+  // silent - the bug this replaces.
+  int16_t r10 = (int16_t)((have ? rssiSmoothed : 0.0f) * 10.0f);
   int16_t s10 = (int16_t)(snrLast * 10.0f);
   pkt[1] = (uint8_t)(r10 & 0xFF);
   pkt[2] = (uint8_t)(r10 >> 8);
