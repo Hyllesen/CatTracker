@@ -24,7 +24,7 @@ number. Match by label. The five wires below are the complete list.
 | 1, 2, 9 | **GND** | GND | use either GND pad |
 | 3 | **3.3V** | 3.3V / VCC | **3.3 V only.** Never 5 V. |
 | 4 | **RESET** | `031` | P0.31 |
-| — | **SCK** | `011` | P1.11 |
+| — | **SCK** | `011` | P0.11 |
 | — | **MISO** | `002` | P0.02 |
 | — | **MOSI** | `015` | P1.15 |
 | — | **NSS / CS** | `013` | P1.13 |
@@ -40,19 +40,32 @@ noise, which is worth knowing when debugging.
 The five connected signals are: SCK→`011`, MISO→`002`, MOSI→`015`,
 NSS→`013`, RESET→`031`, plus GND, 3.3V and ANT.
 
-### ⚠️ Pro Micro silkscreen labels are not pin numbers
+### ⚠️ `011` is P0.11, not P1.11
 
-`011` means **P1.11**, `002` means **P0.02**. The label is the nRF port number
-followed by the pin, and the port is the important half: P0 and P1 are different
-GPIO ports that share the same pin numbering. A wire soldered to P0.11 instead
-of P1.11 is a completely different pin and the radio will never initialise.
+The silkscreen label is the nRF port number followed by the pin, so `002` is
+P0.02 and `115` is P1.15. **`011` is P0.11.**
+
+That one is genuinely ambiguous on its face — P0.11 and P1.11 are both real,
+adjacent pads, and the label does not say which. The firmware drove **P1.11**
+for a long time, a pad on this board nothing is soldered to. The symptom is
+silent and deeply confusing: the radio is never clocked, so every register
+reads `0x00`, `RegVersion` never equals `0x12`, the firmware reports
+`SX1278 NOT detected`, and the collar stops beaconing. That is
+indistinguishable from a flat battery or a dead radio, which is how it
+survived so long.
+
+Confirmed by brute-forcing the bus: of 128 combinations of the plausible SCK,
+MOSI, CS and MISO pads, exactly one returned `RegVersion = 0x12` — SCK on
+**P0.11**. MOSI, CS, MISO and RESET were already correct.
 
 The firmware comments this in place (`collar/collar.ino`):
 
 ```cpp
-// Silkscreen "111" = P1.11, "002" = P0.02, etc.
-const GPin P_SCK  = { NRF_P1, 11 };
+const GPin P_SCK  = { NRF_P0, 11 };
 ```
+
+**Do not trust a silkscreen port number you have not measured.** If the radio
+stops answering, sweep the candidate pads rather than re-reading the wiring.
 
 ## Antenna
 
@@ -334,7 +347,12 @@ most informative test and takes 20 seconds.
 | Serial output | Meaning |
 |---------------|---------|
 | `[TX] ping #N sent` | Board boots, SPI fine → problem is power or antenna |
+| `SX1278 NOT detected` | Board boots but the radio does not answer on SPI — check the pads, see above |
 | Nothing at all | Not booting → power, or RESET (`031`) shorted |
+
+`SX1278 NOT detected` means `RegVersion` read something other than `0x12`.
+That is the exact state a wrong SCK pad produces, so check `011` = P0.11 before
+suspecting the module.
 
 **3. Compare modem registers.** Both boards print a register dump at boot. A
 mismatch there is the cause far more often than anything physical.
@@ -348,9 +366,12 @@ initialised but permanently silent.
 
 | Key | Action |
 |-----|--------|
-| `BOOT` pin | Ping immediately instead of waiting for the interval |
+| `v` | Toggle verbose logging: TX status, battery, modem register readback |
 
-The BOOT pin is `0`, configured `INPUT_PULLUP`, so the button pulls it low.
+There is no BOOT button on this board. The firmware used to poll Arduino pin 0
+for one, but pin 0 is P0.11 — which is SCK — so reading it as a button input
+configured the clock line as a pull-up and stopped the radio responding. That
+poll has been removed.
 
 ## Output
 

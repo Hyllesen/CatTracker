@@ -17,8 +17,13 @@
 
 struct GPin { NRF_GPIO_Type* port; uint8_t n; };
 
-// Silkscreen "111" = P1.11, "002" = P0.02, etc.
-const GPin P_SCK  = { NRF_P1, 11 };
+// Silkscreen numbers are raw port.pin, so "011" is P0.11 - NOT P1.11. The
+// three-digit form is ambiguous on its face, and guessing wrong here is silent:
+// with SCK on a dead pad the radio is never clocked, every register reads 0x00,
+// RegVersion never equals 0x12, and the collar looks exactly like a flat battery.
+// Confirmed by brute-forcing the bus until RegVersion read 0x12 - P0.11 was the
+// only SCK of 128 tried that answered.
+const GPin P_SCK  = { NRF_P0, 11 };
 const GPin P_MISO = { NRF_P0,  2 };
 const GPin P_MOSI = { NRF_P1, 15 };
 const GPin P_CS   = { NRF_P1, 13 };
@@ -374,7 +379,10 @@ void setup() {
     // Deliberately NOT calling analogReadResolution(12) - see ADC_MAX.
   }
 
-  pinMode(0, INPUT_PULLUP);   // BOOT button -> ping now
+  // Deliberately NOT configuring Arduino pin 0 as a button input. Pin 0 is
+  // P0.11 on this core, which is SCK - leaving it as INPUT_PULLUP parked the
+  // clock line high and stopped the radio responding. This board has no BOOT
+  // button to read anyway; see the hardware notes in collar/README.md.
 }
 
 // Full status report, emitted on demand by the 'v' serial command.
@@ -426,22 +434,7 @@ void loop() {
     }
   }
 
-  // Manual ping on BOOT press
-  if (digitalRead(0) == LOW) {
-    delay(50);
-    while (digitalRead(0) == LOW) delay(10);
-    pingCount++;
-    char payload[24];
-    buildPayload(payload, sizeof(payload));
-    bool ok = sendPacket(payload);
-    if (logOk()) {
-      Serial.print(F("[TX] manual ping #"));
-      Serial.print(pingCount);
-      Serial.println(ok ? F(" sent") : F(" TIMEOUT"));
-    }
-    lastPingMs = millis();
-    return;
-  }
+  // (no manual-ping button: the board has none, and pin 0 is SCK)
 
   if (millis() - lastPingMs >= PING_INTERVAL_MS) {
     pingCount++;
