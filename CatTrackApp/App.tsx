@@ -138,6 +138,16 @@ const PULSE_MS = 500;
  *  occasional missed beacon doubles one sample and would skew an average. */
 const INTERVAL_SAMPLES = 7;
 
+/**
+ * Silence after which the BLE link is presumed dead and reconnected.
+ *
+ * Comfortably longer than the handheld's keep-alive (2 s) and longer than the
+ * worst expected beacon gap (one interval plus the 200 ms receive margin), so
+ * a healthy link never trips this - it only fires when nothing at all has
+ * arrived for a long time, which is the signature of a dead connection.
+ */
+const STALL_RECONNECT_MS = 25000;
+
 function median(values: number[]): number {
   if (values.length === 0) {
     return 0;
@@ -204,6 +214,7 @@ function Tracker() {
   // and so reading them does not re-render on every packet.
   const lastBeepRef = useRef<number>(0);
   const intervalsRef = useRef<number[]>([]);
+  const stallRef = useRef(false);
   const [beep, setBeep] = useState<{at: number; tick: number}>({at: 0, tick: 0});
   const [pulse, setPulse] = useState(false);
 
@@ -272,6 +283,7 @@ function Tracker() {
         // rate rather than signal rate.
         if (s.fresh) {
           const now = Date.now();
+          stallRef.current = false;
           if (lastBeepRef.current > 0) {
             intervalsRef.current.push(now - lastBeepRef.current);
             if (intervalsRef.current.length > INTERVAL_SAMPLES) {
@@ -315,6 +327,27 @@ function Tracker() {
       return;
     }
     const id = setInterval(() => {
+      // Stall detection. A BLE link that dies quietly leaves the phone
+      // believing it is still connected, so without this the app sits on a
+      // frozen last reading forever and the user has to reconnect by hand.
+      // The keep-alive on the handheld makes the link survive, but not every
+      // drop is preventable, so notice this one and recover.
+      //
+      // Only counts silence with no fresh beacon, and only once per episode -
+      // reconnecting sets status back to 'connecting', which stops this.
+      if (
+        lastBeepRef.current > 0 &&
+        Date.now() - lastBeepRef.current > STALL_RECONNECT_MS &&
+        !stallRef.current
+      ) {
+        stallRef.current = true;
+        setStatus('connecting');
+        const dev = deviceRef.current;
+        deviceRef.current = null;
+        if (dev) {
+          disconnect(dev);
+        }
+      }
       setBeep(b => ({...b, tick: b.tick + 1}));
       setPulse(p => {
         const now = Date.now();

@@ -161,6 +161,56 @@ uint32_t lastPublishMs = 0;
 // readable; the subscribe events print unconditionally.
 const bool VERBOSE_PUBLISH = false;
 
+// ---------------------------------------------------------------------------
+// Keep-alive
+// ---------------------------------------------------------------------------
+// The radio loop publishes once per received packet, and radio.receive()
+// blocks for COLLAR_PING_MS + 200, so without help the phone would hear
+// nothing for ~8 s at a time. Android's BLE supervision timeout is ~7.2 s, so
+// that gap can drop the link - and the app has no way to notice, because a
+// dead connection looks exactly like a quiet one.
+//
+// This task re-sends the last built packet on its own timer so the link stays
+// warm between beacons. The radio is untouched: loop() still owns receive(),
+// still uses the full window, and still misses nothing.
+//
+// The payload is a cached copy rather than a shared read, so the task never
+// races loop() partway through building a packet. The mutex is only held for
+// a 8-byte memcpy.
+static portMUX_TYPE signalMux = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t cachedPkt[SIGNAL_PKT_LEN];
+static bool cachedValid = false;
+
+// Comfortably under Android's ~7.2 s supervision timeout, and frequent enough
+// that the phone always has a fresh reading without flooding the radio.
+const uint32_t KEEPALIVE_MS = 2000;
+
+void publishKeepaliveTask(void* arg) {
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(KEEPALIVE_MS));
+
+    uint8_t pkt[SIGNAL_PKT_LEN];
+    portENTER_CRITICAL(&signalMux);
+    bool have = cachedValid;
+    if (have) memcpy(pkt, cachedPkt, SIGNAL_PKT_LEN);
+    portEXIT_CRITICAL(&signalMux);
+
+    // A keep-alive is not a new packet. The cached copy still carries FLAG_FRESH
+    // from whenever it was built, and re-sending that verbatim makes the app
+    // count a beacon every KEEPALIVE_MS - it would beep and play its tone on a
+    // 2 s cadence and measure the beacon interval as 2 s. Clear it so the app
+    // sees a keep-alive as silence and the real cadence stays at the real one.
+    pkt[0] &= (uint8_t)~FLAG_FRESH;
+
+    // Only while a phone is actually listening - notifying with no client
+    // connected is what fills notify_fail in the diagnostics.
+    if (have && signalChar && phoneConnected && phoneSubscribed) {
+      signalChar->setValue(pkt, SIGNAL_PKT_LEN);
+      signalChar->notify();
+    }
+  }
+}
+
 // Build and push the current signal state to any subscribed phone.
 void publishSignal(bool fresh) {
   uint8_t pkt[SIGNAL_PKT_LEN];
@@ -196,6 +246,13 @@ void publishSignal(bool fresh) {
     Serial.print(F(" sub="));
     Serial.println(phoneSubscribed ? 1 : 0);
   }
+
+  // Stash for the keep-alive task, which republishes this while the radio is
+  // blocked in receive() and cannot publish for itself.
+  portENTER_CRITICAL(&signalMux);
+  memcpy(cachedPkt, pkt, SIGNAL_PKT_LEN);
+  cachedValid = true;
+  portEXIT_CRITICAL(&signalMux);
 
   if (signalChar) {
     signalChar->setValue(pkt, SIGNAL_PKT_LEN);
@@ -328,6 +385,10 @@ void setup() {
   if (!initRadio()) while (true) delay(1000);
 
   setupBLE();
+
+  // Priority 1, same as loopTask. The stack only has to hold an 8-byte buffer
+  // plus the NimBLE call, so 3 KB is ample.
+  xTaskCreate(publishKeepaliveTask, "keepalive", 3072, NULL, 1, NULL);
 }
 
 // Print a one-line BLE summary so the state is visible without verbose spam.
