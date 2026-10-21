@@ -55,6 +55,34 @@ number and ignore the function label.
   native USB CDC; powering from a charger or power bank means nothing drains
   it, so the write blocks and silently stops the board. Logging defaults off and
   is enabled by sending `v`. See `collar/README.md`.
+- **In the handheld, every print is gated on `hostAttached()`, which is
+  `Serial.isPlugged()`.** That turns the rule above from a habit into a
+  structure: a board with no cable has no Host, prints nothing, and cannot wedge.
+  `isPlugged()` is the USB SOF watchdog, **not DTR** — the handheld must run with
+  DTR low because asserting it resets the board, so a DTR-based "host is here"
+  signal is not available. `setup()` sets `Serial.setTxTimeoutMs(0)` so a Host
+  that opens the port and stops reading cannot stall `loop()` either. Do not add
+  an ungated print, and do not gate on `Serial.isConnected()` (that is false
+  until the host has *read* bytes).
+- **The Report line is a fourth copy of the collar state** (collar frame, roster,
+  app decoder, Report) and it must stay in step with `tools/monitor.py`. It is
+  `RPT <ver> t= pk= unk= ok= fail= pc= ps= cN=r10/s2/batt/packets/missed/age/flags`,
+  integers in the roster's own scaling (dBm × 10, dB × 2). A mismatch is silent:
+  the terminal prints nothing, which looks exactly like a handheld that has not
+  heard a collar. `python3 tools/test_monitor.py` replays the firmware's exact
+  bytes through the parser, so change the format string in the firmware *and* in
+  the test. See `docs/adr/0001`.
+- **Nothing can find the handheld by probing for its banner any more.** The
+  banner is printed only when a Host is on the cable, and the OS enumerates USB
+  at plug-in time, so it is written to a port with nobody reading it and dropped.
+  `tools/monitor.py`, `tools/log_dbm.py` and `tools/serial_cmd.py` find the board
+  by USB vendor id `0x303a` (the collar is `0x239a`). Do not reintroduce a banner
+  probe: it now returns nothing.
+- **`tools/monitor.py` opens the port with DTR low**, and finds the port by USB
+  vendor id `0x303a` rather than by the `usbmodem` suffix, which is shuffled
+  between reboots. Asserting DTR restarts the board and drops the phone's BLE
+  connection, so a run of the monitor is not a harmless act of curiosity — it
+  resets the handheld. The firmware does not need DTR, so keep it low.
 - Match the two firmwares on every radio change. See
   "Air settings (must match the handheld)" in `collar/README.md`.
 - **The packet frame has to match too, in three places:** the collar's

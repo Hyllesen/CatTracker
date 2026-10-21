@@ -81,31 +81,21 @@ def open_port(port, dtr):
 
 
 def find_port():
-    """Find the ESP32-C3 by probing for its banner.
+    """Find the ESP32-C3 by USB vendor id.
 
-    There are usually two boards plugged in, so guessing by filename is not
-    safe. Each candidate is opened and checked for the handheld's banner.
+    Probing for the banner is no longer possible: the handheld prints only when
+    a Host is on the cable, and the OS enumerates the device at plug-in time, so
+    the banner goes to a port with nobody reading it and is dropped. The vendor
+    id tells the two boards apart without asking either of them to speak: the
+    handheld is Espressif (0x303a), the collar is Adafruit/nRF52840 (0x239a).
     """
+    from serial.tools import list_ports
+    for p in list_ports.comports():
+        if p.vid == VID_ESPRESSIF:
+            return p.device
+    # Nothing known: take the first serial port so the user sees whatever is
+    # there rather than a message saying "not found".
     ports = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/cu.usbserial*"))
-    for p in ports:
-        s = open_port(p, dtr_for(p))
-        try:
-            s.open()
-            time.sleep(0.3)
-            data = b""
-            for _ in range(20):
-                data += s.read(512)
-                if b"Handheld" in data:
-                    break
-            s.close()
-            if b"Handheld" in data:
-                return p
-        except Exception:
-            try:
-                s.close()
-            except Exception:
-                pass
-    # Fall back to the first port so the user sees the banner either way.
     return ports[0] if ports else None
 
 

@@ -12,11 +12,13 @@ number move. Keep both boards the same distance apart and orientation
 between runs, and check the spread - if it climbs past a couple of dB the
 setup is drifting and the comparison means nothing.
 
-The port is found by probing for the handheld's banner rather than by
-filename, because with two boards plugged in the usbmodem suffixes get
-shuffled between reboots.
+The port is found by USB vendor id, not by filename: with two boards plugged in
+the usbmodem suffixes are shuffled between reboots, and the handheld's banner is
+printed only when a Host is on the cable, so there is nothing to probe for.
+
+Note this tool reads the human-readable 'v' output, not the RPT stream - the
+RPT stream is what tools/monitor.py reads, and it carries more.
 """
-import glob
 import sys
 import time
 
@@ -24,6 +26,8 @@ try:
     import serial
 except ImportError:
     sys.exit("pip install pyserial")
+
+VID_ESPRESSIF = 0x303A   # the ESP32-C3 handheld
 
 # e.g. "[+] pkt #45  RSSI -23.0 dBm  smoothed -23.0 dBm  snr 13.3 dB"
 import re
@@ -34,39 +38,19 @@ PACKET = re.compile(
 
 
 def find_port():
-    """Return the port that actually yields signal data.
+    """The handheld's port, by USB vendor id.
 
-    Tries each candidate and keeps the one that produces a packet line, which
-    works whether or not the board is freshly booted. Matching on the boot
-    banner alone is not enough: DTR is deasserted so opening the port does not
-    reset the board, so a running handheld never prints its banner and would
-    go undetected.
+    Probing for the banner is no longer possible: the handheld prints only when
+    a Host is on the cable, and the OS enumerates the device at plug-in time,
+    so the banner is written to a port with nobody reading it and is dropped.
+    The vendor id is deterministic - the collar is an nRF52840 (0x239a), the
+    handheld is an Espressif USB JTAG unit (0x303a) - and it does not need the
+    board to say anything at all.
     """
-    ports = sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/cu.usbserial*"))
-    for port in ports:
-        s = serial.Serial()
-        s.port = port
-        s.baudrate = 115200
-        s.timeout = 0.2
-        s.dtr = False
-        s.rts = False
-        try:
-            s.open()
-            time.sleep(0.3)
-            data = b""
-            deadline = time.time() + 2.0
-            while time.time() < deadline:
-                data += s.read(512)
-                if b"Handheld" in data or b"pkt #" in data:
-                    break
-            s.close()
-            if b"Handheld" in data or b"pkt #" in data:
-                return port
-        except Exception:
-            try:
-                s.close()
-            except Exception:
-                pass
+    from serial.tools import list_ports
+    for p in list_ports.comports():
+        if p.vid == VID_ESPRESSIF:
+            return p.device
     return None
 
 

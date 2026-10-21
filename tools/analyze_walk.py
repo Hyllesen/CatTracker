@@ -12,6 +12,9 @@ on it produces one interleaved file that can be split per cat afterwards.
 Older files without the id column are still read - everything is then
 reported as a single collar.
 
+The layout tools/monitor.py --csv writes is also read:
+    host_time,dev_time,id,name,rssi,rssi_raw,snr,battery,packets,missed,age,flags
+
 Two older layouts are also accepted:
     t_ms,rssi_dbm,snr_db,flags,raw        (no collar id)
     t_ms,rssi_dbm,snr_db,marker,fresh,raw (the original handheld dump)
@@ -30,6 +33,12 @@ def load(path):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        if line.startswith("host_time"):
+            # The header tools/monitor.py --csv writes. Trusting it beats
+            # guessing: the name column is a string, so a column-count guess
+            # would read the name as a number and drop every row.
+            has_id = True
+            continue
         if line.startswith("t_ms"):
             # The header says which layout this is. Trusting it beats
             # guessing: the current layout and the original handheld dump
@@ -39,7 +48,28 @@ def load(path):
             continue
 
         parts = line.split(",")
-        if len(parts) == 6 and (has_id is True or _is_id(parts[1])):
+        if len(parts) == 12:
+            # tools/monitor.py --csv. The flags here are the roster flags
+            # (bit1 FRESH, bit2 STALE), not the walk-test marker bits, and a
+            # USB cable has no BOOT button, so there are no waypoints.
+            # rssi_raw is the unsmoothed reading, which is what the noise floor
+            # needs: a spread of smoothed samples is the smoothing, not the
+            # multipath.
+            try:
+                flags = int(parts[11])
+                rows.append({
+                    "t": int(parts[1]),
+                    "id": int(parts[2]),
+                    "rssi": float(parts[4]),
+                    "snr": float(parts[6]),
+                    "marker": False,
+                    "fresh": bool(flags & 0x02),
+                    "error": False,
+                    "raw": float(parts[5]),
+                })
+            except ValueError:
+                continue
+        elif len(parts) == 6 and (has_id is True or _is_id(parts[1])):
             # t_ms,id,rssi,snr,flags,raw
             try:
                 rows.append({

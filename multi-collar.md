@@ -72,9 +72,9 @@ id went onto which board that survives a reflashing:
 
 | Collar id | USB serial number | Device id (low / high) | Cat | Enclosure |
 |------------|-------------------|------------------------|-----|-----------|
-| 0 | `43241A318258FA98` | `0x8258FA98` / `0x43241A31` | | |
-| 1 | `0D9C35E528ADA721` | `0x28ADA721` / `0x0D9C35E5` | | |
-| 2 | `3E31C88249ACB575` | `0x49ACB575` / `0x3E31C882` | | |
+| 0 | `43241A318258FA98` | `0x8258FA98` / `0x43241A31` | Chichi | |
+| 1 | `0D9C35E528ADA721` | `0x28ADA721` / `0x0D9C35E5` | Onanda | |
+| 2 | `3E31C88249ACB575` | `0x49ACB575` / `0x3E31C882` | Chacha | |
 
 The USB serial number is what the operating system shows, so it is also what
 `system_profiler SPUSBDataType` prints — no serial port, no firmware, no

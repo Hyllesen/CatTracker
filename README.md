@@ -79,6 +79,51 @@ buttons cannot be pressed from the command line on a Redmi; use the phone
 yourself, or `adb shell am start` to launch the app and read the screen with
 `adb exec-out screencap`.
 
+## Watching from a laptop
+
+Plug the handheld into USB and run:
+
+```bash
+python3 tools/monitor.py
+```
+
+A live dashboard: one row per cat, smoothed RSSI, a signal bar, SNR, how long ago
+that cat answered, battery, packets heard, and packets the collar sent that
+never arrived. Ctrl-C prints a summary. `--csv` gives rows you can pipe into
+`analyze_walk.py`, `--json` one object per report, and `--duration 120` stops by
+itself.
+
+Cat names come from `cats.json` in the repo root, read automatically:
+
+```json
+{ "0": "Chichi", "1": "Onanda", "2": "Chacha" }
+```
+
+Keys are collar ids (0, 1, 2), which the app shows as Cat 1, Cat 2, Cat 3. The app
+keeps its own copy on the phone, written by the pencil button on each row, and that
+one cannot be read from a Mac — so the names are typed once in each place.
+`--names <file>` points the terminal at a different file.
+
+The cable does not take the phone's place: the USB port and the Bluetooth
+controller are separate hardware, so the phone keeps working over BLE while the
+terminal is running. Unplugging puts the handheld back on the battery with
+nothing else to change — the firmware prints only when a computer is on the
+cable.
+
+The terminal sees what the phone cannot: packets per collar, `missed` (gaps in
+the collar's sequence counter — packets sent that never arrived), total packets,
+packets naming an id this build does not know, and the BLE subscription counters.
+The 20-byte roster has no room for them; a cable has no MTU. The numbers the two
+*do* share are read from one snapshot, so the terminal and the phone cannot
+disagree about a cat's age.
+
+```bash
+python3 tools/test_monitor.py   # checks the Report format against the parser
+```
+
+The reasoning is in [docs/adr/0001](./docs/adr/0001-laptop-watches-over-cable.md),
+and the words the project uses are in [GLOSSARY.md](./GLOSSARY.md).
+
 ## Working on a new collar
 
 [Collar/README.md](collar/README.md) has the full story: the wiring table,
