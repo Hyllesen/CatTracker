@@ -7,10 +7,11 @@ import {
 
 import {
   DEVICE_NAME,
+  Roster,
   SERVICE_UUID,
   SIGNAL_CHAR_UUID,
-  Signal,
-  decodeSignal,
+  decodeLegacy,
+  decodeRoster,
 } from './signal';
 
 export type Status =
@@ -22,7 +23,7 @@ export type Status =
 
 export type TrackerState = {
   status: Status;
-  signal: Signal | null;
+  roster: Roster | null;
   error: string | null;
 };
 
@@ -54,6 +55,18 @@ function base64ToBytes(b64: string): Uint8Array {
     }
   }
   return out.subarray(0, index);
+}
+
+/**
+ * Decode whatever the handheld sent.
+ *
+ * The roster is the current format; the legacy single-collar packet is still
+ * accepted so the app keeps working against a handheld that has not been
+ * reflashed yet. The two are told apart by the first byte, so this cannot
+ * guess wrong.
+ */
+export function decodeHandheld(bytes: Uint8Array | null): Roster | null {
+  return decodeRoster(bytes) ?? decodeLegacy(bytes);
 }
 
 export type ScanResult = {
@@ -111,17 +124,38 @@ export async function scanForHandheld(timeoutMs = 8000): Promise<ScanResult> {
  */
 export async function connectAndSubscribe(
   device: Device,
-  onSignal: (signal: Signal) => void,
+  onRoster: (roster: Roster) => void,
 ): Promise<Subscription> {
   const connected = await device.connect();
   await connected.discoverAllServicesAndCharacteristics();
-  // The firmware's notification payload is 7 bytes, so a modest MTU is plenty
-  // and keeps the connection cheap. Some Android stacks default high and fail
-  // to negotiate, so ask explicitly.
+
+  // The roster is 20 bytes, which fits the default ATT payload, so this is
+  // belt and braces rather than a requirement. Some Android stacks default
+  // high and fail to negotiate, so ask explicitly and carry on either way.
   try {
     await connected.requestMTU(64);
   } catch {
-    // Keep the negotiated default; 7 bytes fits anything above 10.
+    // Keep the negotiated default; 20 bytes fits anything above 23.
+  }
+
+  // Read the roster once before subscribing. Without this the phone only
+  // learns about the cats that happen to ping after it connected, which is
+  // how you end up convinced that one cat is missing when it is simply
+  // quiet. The characteristic is readable for exactly this reason.
+  try {
+    const snapshot = await connected.readCharacteristicForService(
+      SERVICE_UUID,
+      SIGNAL_CHAR_UUID,
+    );
+    if (snapshot?.value) {
+      const roster = decodeHandheld(base64ToBytes(snapshot.value));
+      if (roster) {
+        onRoster(roster);
+      }
+    }
+  } catch {
+    // Not fatal: the notifications carry the same information a moment
+    // later. A handheld that does not support reads simply has no snapshot.
   }
 
   return connected.monitorCharacteristicForService(
@@ -131,9 +165,9 @@ export async function connectAndSubscribe(
       if (error || !characteristic?.value) {
         return;
       }
-      const signal = decodeSignal(base64ToBytes(characteristic.value));
-      if (signal) {
-        onSignal(signal);
+      const roster = decodeHandheld(base64ToBytes(characteristic.value));
+      if (roster) {
+        onRoster(roster);
       }
     },
   );

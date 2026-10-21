@@ -26,6 +26,44 @@
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Collar identity
+// ---------------------------------------------------------------------------
+// Every collar needs its own id, set at flash time:
+//
+//   arduino-cli compile --fqbn "adafruit:nrf52:feather52840" \
+//     --build-property "compiler.cpp.extra_flags=-DCOLLAR_ID=1" \
+//     collar/collar.ino
+//
+// The id rides in byte 2 of every packet, so the handheld can tell the cats
+// apart and the app can show one row per cat.
+//
+// The id is NOT derived from the chip's hardware id. Three collars are
+// flashed and installed at different times, so any mapping from a hardware
+// id onto a small slot would put two of them in the same slot - and they
+// cannot negotiate their way out of it, because the link is strictly
+// one-way. Flashing a collar twice with the same id is the one mistake that
+// is invisible until two cats merge into one row on the phone.
+//
+// The chip's factory DEVICEID is printed by the 'v' command instead, so you
+// can write it on the enclosure and confirm which physical collar you just
+// flashed.
+#ifndef COLLAR_ID
+#define COLLAR_ID 0
+#endif
+
+// How many collars the handheld tracks at once. Bounded by the roster the
+// handheld publishes: 2 bytes of header plus 6 bytes per collar, which has to
+// fit in one BLE notification without MTU negotiation.
+#ifndef MAX_COLLARS
+#define MAX_COLLARS 3
+#endif
+
+#if COLLAR_ID < 0 || COLLAR_ID >= MAX_COLLARS
+#error "COLLAR_ID must be between 0 and MAX_COLLARS-1"
+#endif
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Cat collar transmitter - TENSTAR ROBOT nRF52840 Pro Micro + RA-02 (SX1278)
 //
 // Uses bit-banged SPI on the pins already wired to the RA-02. No DIO0 is
@@ -124,8 +162,9 @@ const uint8_t BW_125K_RAW = 0x70;  // ModemConfig1 bits 7:4
 const uint8_t SF9_RAW     = 0x90;  // ModemConfig2 bits 7:4
 const uint8_t CR_4_7_RAW  = 0x06;  // ModemConfig1 bits 3:1
 
-// Collar pings this often. Must stay equal to COLLAR_PING_MS in
-// handheld_ble/handheld_ble.ino - see the note there.
+// Collar pings this often. The handheld's receive window must cover the
+// SLOWEST collar's period, not this one - see RX_TIMEOUT_MS in
+// handheld_ble/handheld_ble.ino.
 //
 // The handheld publishes to the phone once per received packet, so this value
 // also sets the gap between BLE notifications. That coupling is real but is NOT
@@ -140,6 +179,29 @@ const uint8_t CR_4_7_RAW  = 0x06;  // ModemConfig1 bits 3:1
 // and reports a wrong "next in" countdown. Hold the port open for the whole
 // session when testing, as tools do.
 const uint32_t PING_INTERVAL_MS = 8000;
+
+// Each collar pings on its OWN slightly different period, offset by its id.
+//
+// Why not a fixed phase (all collars ping every 8 s, but collar 2 waits
+// 2.7 s before its first ping)? Because a fixed phase only avoids collisions
+// if every collar happens to boot at the right moment relative to the others.
+// Flash and install them a day apart and the phases are whatever the
+// installation order happened to produce - and if two land within one 140 ms
+// airtime of each other they collide EVERY cycle, which hides two of the
+// three cats completely, forever.
+//
+// A different period per collar cannot get stuck: the relative phase drifts by
+// PING_PERIOD_STEP_MS every cycle, so any accidental alignment moves apart on
+// its own. The cost is a small, constant collision probability instead of
+// none - roughly 1.75% per pair per cycle, since a 140 ms packet overlaps
+// another only when their start times land within 140 ms of each other - and
+// a cadence that differs by at most 0.3 s between cats, which is
+// imperceptible.
+//
+// 137 ms is deliberately not a round number and not a divisor of the
+// interval: it keeps the three periods from re-aligning on a short cycle.
+const uint32_t PING_PERIOD_STEP_MS = 137;
+const uint32_t COLLAR_PERIOD_MS = PING_INTERVAL_MS + COLLAR_ID * PING_PERIOD_STEP_MS;
 
 // How long loop() sleeps in one go before servicing the serial port. Long
 // enough that tick suppression actually saves power, short enough that a
@@ -251,14 +313,48 @@ uint8_t readBatteryPercent() {
   return 0;
 }
 
-// Build "CAT-01;bat=NN". Built into a buffer rather than a literal so the
-// reported figure tracks the cell instead of being a hardcoded 100.
-void buildPayload(char* out, size_t cap) {
-  if (batteryValid) {
-    snprintf(out, cap, "CAT-01;bat=%u", batteryPct);
-  } else {
-    strcpy(out, "CAT-01;bat=--");
-  }
+// ---------------------------------------------------------------------------
+// Packet format - MUST match the handheld
+// ---------------------------------------------------------------------------
+// Six bytes, little-endian where it matters:
+//
+//   byte 0   0xC1        magic / protocol version
+//   byte 1   seq         wrapping 0..255, increments every ping
+//   byte 2   id          0..MAX_COLLARS-1
+//   byte 3   battery     0..100, 0xFF = unknown (ADC pin unwired)
+//   byte 4   flags       bit0 = LOW_BATT (<15%), rest reserved
+//   byte 5   reserved
+//
+// Six bytes is not an arbitrary number. At SF9/BW125 the payload rounds up to
+// whole symbols, so five bytes and six bytes cost exactly the same airtime:
+// payload symbols = ceil((8*6 - 4*9 + 28 + 16) / 36) = 2, so the whole frame
+// is on the air for (8 + 4.25 + 2*11) * 4.096 ms = 140 ms. The old 13-byte
+// ASCII payload needed four symbols - 230 ms - so the binary frame cuts the
+// transmit burst by 90 ms, which is most of what is left of the collar's
+// power budget now that the fixed draws are gone.
+//
+// The magic byte rejects anything that is not one of ours, so a stray decoded
+// frame can never turn into a phantom cat. LoRa's own payload CRC already
+// covers transmission errors, so there is no CRC of our own.
+const uint8_t FRAME_MAGIC = 0xC1;
+const uint8_t FRAME_LEN   = 6;
+const uint8_t FLAG_LOW_BATT = 0x01;
+
+// Battery reading carried in the frame. 0xFF means "no reading", which is
+// what the collar sends until the battery divider is wired to pin 029.
+const uint8_t BATT_UNKNOWN = 0xFF;
+
+uint8_t seqCounter = 0;
+
+// Build the 6-byte frame. Built from the live battery reading rather than a
+// literal so the reported figure tracks the cell.
+void buildFrame(uint8_t* out) {
+  out[0] = FRAME_MAGIC;
+  out[1] = seqCounter++;
+  out[2] = COLLAR_ID;
+  out[3] = batteryValid ? batteryPct : BATT_UNKNOWN;
+  out[4] = (batteryValid && batteryPct < 15) ? FLAG_LOW_BATT : 0x00;
+  out[5] = 0x00;
 }
 
 // Read-modify-write of bits [startBit..endBit] in a register. RadioLib writes
@@ -375,9 +471,8 @@ void radioSleep() {
 // Transmit one packet; returns true if TxDone was observed before timeout.
 //
 // Assumes the radio is awake. loop() calls radioInit() before this.
-bool sendPacket(const char* payload, uint32_t timeoutMs = 3000) {
-  uint8_t len = strlen(payload);
-
+bool sendPacket(const uint8_t* payload, uint8_t len) {
+  const uint32_t timeoutMs = 3000;   // far above the 140 ms the frame needs
   writeReg(REG_OP_MODE, 0x80 | 0x01);   // LoRa | standby
 
   // FIFO pointer to base
@@ -498,8 +593,24 @@ void printConfig() {
   Serial.print(SYNC_WORD, HEX);
   Serial.println();
   Serial.print(F("Pinging every "));
-  Serial.print(PING_INTERVAL_MS / 1000);
-  Serial.println(F("s"));
+  Serial.print(COLLAR_PERIOD_MS / 1000);
+  Serial.print(F("."));
+  Serial.print((COLLAR_PERIOD_MS % 1000) / 100);
+  Serial.print(F("s (id "));
+  Serial.print(COLLAR_ID);
+  Serial.print(F(" of "));
+  Serial.print(MAX_COLLARS);
+  Serial.println(F(")"));
+
+  // The factory device id is printed so a physical collar can be identified
+  // after flashing - "I just flashed Miso's collar, not the spare" is a
+  // question this answers, and it is the only thing on the board that
+  // identifies the hardware rather than the firmware.
+  Serial.print(F("Device id: 0x"));
+  Serial.println((uint32_t)NRF_FICR->DEVICEID[0], HEX);
+  Serial.print(F("            0x"));
+  Serial.println((uint32_t)NRF_FICR->DEVICEID[1], HEX);
+
   Serial.print(F("Battery pin: Arduino index "));
   Serial.print(BATT_PIN);
   Serial.println(F(" (P0.29, the pad marked \"029\")"));
@@ -522,7 +633,7 @@ void loop() {
 
   // (no manual-ping button: the board has none, and pin 0 is SCK)
 
-  if (millis() - lastPingMs >= PING_INTERVAL_MS) {
+  if (millis() - lastPingMs >= COLLAR_PERIOD_MS) {
     pingCount++;
 
     // Sample the cell on its own much slower schedule than the pings. The
@@ -555,14 +666,18 @@ void loop() {
     // registers and a partial re-init would transmit on last ping's config.
     radioInit();
 
-    char payload[24];
-    buildPayload(payload, sizeof(payload));
-    bool ok = sendPacket(payload);
+    uint8_t frame[FRAME_LEN];
+    buildFrame(frame);
+    bool ok = sendPacket(frame, FRAME_LEN);
     radioSleep();
     if (logOk()) {
       Serial.print(F("[TX] ping #"));
       Serial.print(pingCount);
-      Serial.println(ok ? F(" sent") : F(" TIMEOUT"));
+      Serial.print(F(" sent (id "));
+      Serial.print(COLLAR_ID);
+      Serial.print(F(", seq "));
+      Serial.print(seqCounter - 1);
+      Serial.println(ok ? F(")") : F(" TIMEOUT)"));
     }
     lastPingMs = millis();
   }
@@ -582,11 +697,11 @@ void loop() {
   // Sleeping in slices rather than one long delay keeps serial responsive:
   // a 'v' arriving mid-interval is picked up within IDLE_SLICE_MS.
   if (!sx1278Present) {
-    delay(PING_INTERVAL_MS);
+    delay(COLLAR_PERIOD_MS);
     return;
   }
-  while (millis() - lastPingMs < PING_INTERVAL_MS) {
-    uint32_t remaining = PING_INTERVAL_MS - (millis() - lastPingMs);
+  while (millis() - lastPingMs < COLLAR_PERIOD_MS) {
+    uint32_t remaining = COLLAR_PERIOD_MS - (millis() - lastPingMs);
     delay(remaining < IDLE_SLICE_MS ? remaining : IDLE_SLICE_MS);
     while (Serial.available()) {
       char c = (char)Serial.read();

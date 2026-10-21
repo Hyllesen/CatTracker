@@ -1,5 +1,12 @@
 {
   "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    // The React Native preset narrows this to jest only, which hides the
+    // node built-ins. The protocol test reads the firmware sources with
+    // fs/path, so both sets of types are needed. @types/node comes in with
+    // the jest toolchain - it is not a separate dependency.
+    "types": ["jest", "node"]
+  },
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["**/node_modules", "**/Pods"]
 }

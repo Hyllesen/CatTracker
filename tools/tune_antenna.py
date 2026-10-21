@@ -79,22 +79,19 @@ try:
 except ImportError:
     sys.exit("pip install pyserial")
 
-# Two handhelds print RSSI and this tool has to read both.
+# The handheld prints RSSI and this tool has to read it.
 #
-#   handheld/handheld.ino       [+ ] pkt #1  payload=CAT-01;bat=100
-#                                   RSSI raw -41.0 dBm | SNR 10.0 dB | ...
-#   handheld_ble/handheld_ble.ino   [+] pkt #1  RSSI -44.0 dBm  smoothed -43.7
-#                                    dBm  snr 11.0 dB  signal 85%
+#   handheld_ble/handheld_ble.ino   [+] pkt #1 id=0  RSSI -44.0 dBm  smoothed -43.7
+#                                    dBm  snr 11.0 dB  batt 78%
 #
-# Differences that matter: the BLE build omits the word "raw", lowercases
-# "snr", and prints everything on one line. Match on structure, not lines -
-# both wrap mid-line depending on firmware and terminal width.
+# The line can wrap mid-line depending on firmware and terminal width, so
+# match on structure rather than on lines.
 RSSI_RE = re.compile(rb"RSSI\s+(?:raw\s+)?(-?\d+(?:\.\d+)?)\s*dBm", re.S)
 SNR_RE = re.compile(rb"[Ss][Nn][Rr]\s*(-?\d+(?:\.\d+)?)\s*dB", re.S)
 PKT_RE = re.compile(rb"pkt\s*#(\d+)")
 WALK_RE = re.compile(rb"WALK-TEST MODE")
-# Only handheld.ino prints a boot banner. handheld_ble.ino is silent at boot on
-# purpose, so a packet line has to count as "ready" too.
+# The handheld is silent at boot on purpose, so a packet line has to count as
+# "ready" too.
 READY_RE = re.compile(rb"Listening for collar pings")
 
 # There is no BOOT button on the collar - the firmware poll that used to read

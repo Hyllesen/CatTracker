@@ -6,7 +6,11 @@
  * numbers to remember. The column layout is the one tools/analyze_walk.py
  * already expects, so an exported file drops straight into that script:
  *
- *     t_ms,rssi_dbm,snr_db,flags,raw
+ *     t_ms,id,rssi_dbm,snr_db,flags,raw
+ *
+ * The id column is which collar the packet came from, so a walk with several
+ * cats on it produces one interleaved file that can be split per cat
+ * afterwards. Marker rows carry id -1: a waypoint is not a cat.
  *
  * flags is a bitfield: 0x01 fresh packet, 0x02 marker, 0x08 receive error.
  * Note this is NOT the same bit layout as the BLE packet's flags byte.
@@ -19,10 +23,13 @@
 import {Dirs, FileSystem} from 'react-native-file-access';
 import Share from 'react-native-share';
 
-import {Signal} from './signal';
+import {Collar} from './signal';
 
 /** Sentinel the analyzer uses for "no packet heard". */
 const NO_DATA = -127.0;
+
+/** Id used for rows that do not belong to a collar (markers). */
+export const NO_COLLAR = -1;
 
 const FLAG_FRESH = 0x01;
 const FLAG_MARKER = 0x02;
@@ -68,7 +75,8 @@ const HEADER = [
   '#       the analyzer\'s "raw noise" figure describes the firmware averaging',
   '#       window, not the RF noise floor. Fixing that needs a firmware change',
   '#       to put the unsmoothed reading on the wire.',
-  't_ms,rssi_dbm,snr_db,flags,raw',
+  '# The id column is the collar that sent the packet; -1 is a marker row.',
+  't_ms,id,rssi_dbm,snr_db,flags,raw',
 ].join('\n');
 
 export async function startRecording(): Promise<void> {
@@ -103,18 +111,26 @@ async function append(line: string): Promise<void> {
   }
 }
 
-function formatRow(tMs: number, rssi: number, snr: number, flags: number): string {
-  return `${tMs},${rssi.toFixed(1)},${snr.toFixed(1)},${flags},${rssi.toFixed(1)}\n`;
+function formatRow(
+  tMs: number,
+  id: number,
+  rssi: number,
+  snr: number,
+  flags: number,
+): string {
+  return `${tMs},${id},${rssi.toFixed(1)},${snr.toFixed(1)},${flags},${rssi.toFixed(1)}\n`;
 }
 
 /** Record one received packet. Called only for fresh packets. */
-export async function addSample(signal: Signal): Promise<void> {
+export async function addSample(collar: Collar): Promise<void> {
   if (path === null) {
     return;
   }
-  const rssi = signal.rssi === null ? NO_DATA : signal.rssi;
-  const snr = signal.snr === null ? NO_DATA : signal.snr;
-  await append(formatRow(Date.now() - startMs, rssi, snr, FLAG_FRESH));
+  const rssi = collar.rssi === null ? NO_DATA : collar.rssi;
+  const snr = collar.snr === null ? NO_DATA : collar.snr;
+  await append(
+    formatRow(Date.now() - startMs, collar.id, rssi, snr, FLAG_FRESH),
+  );
 }
 
 /**
@@ -128,7 +144,9 @@ export async function addMarker(label: string): Promise<void> {
   }
   const tMs = Date.now() - startMs;
   await append(`# MARKER ${tMs} ${label}\n`);
-  await append(formatRow(tMs, NO_DATA, NO_DATA, FLAG_MARKER | FLAG_FRESH));
+  await append(
+    formatRow(tMs, NO_COLLAR, NO_DATA, NO_DATA, FLAG_MARKER | FLAG_FRESH),
+  );
 }
 
 /** Hand the CSV to the Android share sheet. */
