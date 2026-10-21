@@ -2,7 +2,7 @@
 
 A **base station**: a fixed, powered LoRa receiver that reports to the house. It
 is not the walk device. It has no BLE, so the phone app does not talk to it — the
-phone talks to the handheld. What a base station buys is *placement*: it sits high
+phone talks to the handheld. What a base station buys is _placement_: it sits high
 and powered near where the cats go, and it never moves, which is what makes
 "Chichi has not been heard in four hours" possible at all.
 
@@ -28,10 +28,8 @@ The ESP8266 has no BLE and no USB CDC, which is exactly the set of things a base
 station does not need. It is cheaper, the house already has one, and its WiFi is
 proven in this house.
 
-**The one thing it cannot do is a CC1101.** The ESP8266 already in this house runs
-a CC1101 at 433.92 MHz. CC1101 is FSK/GFSK and has **no LoRa mode**, so it cannot
-receive a collar. This board needs an SX1278 (RA-02) on the same 433 MHz band the
-collars use. A CC1101 homebase is a different radio project, not this one.
+This board needs an SX1278 (RA-02) on the same 433 MHz band the
+collars use.
 
 ## Wiring
 
@@ -40,10 +38,10 @@ the hardware chip select is GPIO15.
 
 ```
               RA-02 (SX1278)                    ESP8266
-              ┌──────────┐                      
-       NSS ───┤          │                      
-       MOSI ──┤          │        D6 / GPIO13 ──┤ MOSI
-       MISO ──┤          │        D7 / GPIO12 ──┤ MISO
+              ┌──────────┐
+       NSS ───┤          │
+       MOSI ──┤          │        D7 / GPIO13 ──┤ MOSI
+       MISO ──┤          │        D6 / GPIO12 ──┤ MISO
        SCK ───┤          │        D5 / GPIO14 ──┤ SCK
        DIO0 ──┤          │        D2 / GPIO4  ──┤ DIO0
        RST ───┤          │        D4 / GPIO2  ──┤ RST
@@ -52,16 +50,26 @@ the hardware chip select is GPIO15.
               └──────────┘
 ```
 
-| RA-02 | ESP8266 | Arduino pin | Notes |
-|---|---|---|---|
-| SCK | GPIO14 (D5) | 14 | HSPI clock |
-| MISO | GPIO12 (D7) | 12 | HSPI in |
-| MOSI | GPIO13 (D6) | 13 | HSPI out |
-| NSS | GPIO15 (D8) | 15 | HSPI chip select |
-| DIO0 | GPIO4 (D2) | 4 | RX-done interrupt |
-| RST | GPIO2 (D4) | 2 | Module reset |
-| 3.3V | 3V3 | — | See power below |
-| GND | GND | — | Common ground |
+| RA-02 | ESP8266     | Arduino pin | Notes             |
+| ----- | ----------- | ----------- | ----------------- |
+| SCK   | GPIO14 (D5) | 14          | HSPI clock        |
+| MISO  | GPIO12 (D6) | 12          | HSPI in           |
+| MOSI  | GPIO13 (D7) | 13          | HSPI out          |
+| NSS   | GPIO15 (D8) | 15          | HSPI chip select  |
+| DIO0  | GPIO4 (D2)  | 4           | RX-done interrupt |
+| RST   | GPIO2 (D4)  | 2           | Module reset      |
+| 3.3V  | 3V3         | —           | See power below   |
+| GND   | GND         | —           | Common ground     |
+
+**The D labels are not in GPIO order.** NodeMCU silkscreen is `D5=GPIO14`,
+`D6=GPIO12`, `D7=GPIO13`, `D8=GPIO15`. D6 and D7 are **not** in ascending GPIO
+order, so wiring by the label alone crosses MOSI and MISO. A crossed pair is
+silent in the specific way this board is: the ESP's MISO line lands on the
+module's MOSI (an input, so it floats and reads high), the ESP's MOSI line lands
+on the module's MISO (an output, and GPIO15's internal pull-down keeps the module
+selected, so a selected SX1278 drives it low). The module is powered and alive,
+the loop runs, and every SPI read returns `0xFF` - which looks exactly like a
+dead module. Read the GPIO number, not the D label.
 
 DIO1, DIO2, DIO3 and ANT on the RA-02 are **not connected**. The SX1278 RX-done
 signal is on DIO0, which is the only interrupt this sketch needs.
@@ -76,7 +84,7 @@ no packet is ever heard. It looks exactly like a dead module.
 **GPIO15, GPIO2 and GPIO0 are the boot strap pins.** At reset the ESP8266 samples
 them: GPIO0 low = flash mode, GPIO2 must be high, GPIO15 must be low. GPIO15 has an
 internal **pull-down** and GPIO2 an internal **pull-up**, and the RA-02's NSS and RST
-lines are *inputs to the module* — the module does not drive them — so using GPIO15
+lines are _inputs to the module_ — the module does not drive them — so using GPIO15
 as NSS and GPIO2 as RST does not disturb the boot straps. That is why this pin map
 boots. If you move RST to GPIO0, the board will never boot from flash.
 
@@ -123,7 +131,7 @@ Code in flash (IROM):           273952 / 1048576 (26%)
 
 Flash is comfortable. **IRAM at 94% is the constraint.** On ESP8266, anything
 called from an ISR must live in IRAM, and that segment has ~3.8 KB left. A future
-change can fail there with a *link* error, not a compile error. If you add a radio
+change can fail there with a _link_ error, not a compile error. If you add a radio
 feature and the build fails at link time, that is why.
 
 ## Air settings — must match the collar
@@ -139,11 +147,11 @@ table in `collar/README.md` before blaming the antenna.
 
 MQTT broker: `192.168.100.66:1883` (m710q, anonymous).
 
-| Topic | Content |
-|---|---|
-| `cattracker/<base>/state` | retained JSON, one snapshot per publish |
-| `cattracker/<base>/availability` | retained `online` / `offline` |
-| `homeassistant/sensor/<base>_cat<N>_<field>/config` | retained discovery |
+| Topic                                               | Content                                 |
+| --------------------------------------------------- | --------------------------------------- |
+| `cattracker/<base>/state`                           | retained JSON, one snapshot per publish |
+| `cattracker/<base>/availability`                    | retained `online` / `offline`           |
+| `homeassistant/sensor/<base>_cat<N>_<field>/config` | retained discovery                      |
 
 State fields per collar: `rssi` (dBm × 10), `snr` (dB × 2), `batt`, `age` (seconds
 since last packet), `pk` (packets heard), `miss` (seq gaps — packets the collar sent

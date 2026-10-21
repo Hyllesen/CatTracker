@@ -47,8 +47,12 @@
 // ---------------------------------------------------------------------------
 // Radio hardware: ESP8266 + RA-02 (SX1278)
 // ---------------------------------------------------------------------------
-// ESP8266 Arduino's SPI is HSPI: SCK = GPIO14 (D5), MISO = GPIO12 (D7),
-// MOSI = GPIO13 (D6). NSS is the HSPI chip select, GPIO15 (D8).
+// ESP8266 Arduino's SPI is HSPI: SCK = GPIO14 (D5), MISO = GPIO12 (D6),
+// MOSI = GPIO13 (D7). NSS is the HSPI chip select, GPIO15 (D8).
+//
+// D6 is GPIO12 and D7 is GPIO13 - the silkscreen labels are NOT in GPIO order.
+// Wiring by the label alone crosses MOSI and MISO, and a crossed pair is silent:
+// every SPI read returns 0xFF, which is the same reading as a dead module.
 //
 // DIO0 must be an interrupt-capable pin. GPIO16 (D0) is not - it is the only pin
 // with no interrupt support on the ESP8266, and it is the pin most wiring guides
@@ -218,52 +222,79 @@ char* catName(uint8_t i) {
 void publishSensorConfig(const char* uid, const char* nm, const char* unit,
                          const char* dclass, const char* tmpl,
                          const char* devIdent, const char* devName, bool binary) {
-  char topic[96], json[340];
+  // The longest record measured is ~342 bytes, so 340 truncated it and the
+  // truncated JSON was published anyway. Home Assistant logged "Unable to parse
+  // JSON" for every cat and created no entities - silently, on the device.
+  char topic[96], json[420];
   snprintf(topic, sizeof(topic), "homeassistant/%s/%s_%s/config",
            binary ? "binary_sensor" : "sensor", STR(BASE_ID), uid);
   int n = snprintf(json, sizeof(json),
       "{\"name\":\"%s\",\"unique_id\":\"%s_%s\",", nm, STR(BASE_ID), uid);
-  if (unit && !binary) {
-    n += snprintf(json + n, sizeof(json) - n, "\"unit_of_measurement\":\"%s\",", unit);
-  }
-  if (dclass) {
-    n += snprintf(json + n, sizeof(json) - n, "\"device_class\":\"%s\",", dclass);
-  }
-  snprintf(json + n, sizeof(json) - n,
-      "\"state_topic\":\"%s\",\"value_template\":\"%s\","
-      "\"availability_topic\":\"%s\","
-      "\"device\":{\"identifiers\":[\"%s\"],\"name\":\"%s\","
-      "\"manufacturer\":\"Cat Tracker\",\"model\":\"Homebase\"}}",
-      topicState, tmpl, topicAvail, devIdent, devName);
+
+  // snprintf returns the length it WOULD have written. If a segment overflows, n
+  // runs past the buffer and sizeof(json) - n goes negative, which as a size_t is
+  // a huge length. Clamp after every append, and drop the record rather than
+  // publish broken JSON.
+  #define APPEND(...) do {                                     \
+      if (n < 0 || n >= (int)sizeof(json)) return;             \
+      n += snprintf(json + n, sizeof(json) - n, __VA_ARGS__);  \
+      if (n >= (int)sizeof(json)) return;                      \
+    } while (0)
+
+  if (unit && !binary) APPEND("\"unit_of_measurement\":\"%s\",", unit);
+  if (dclass) APPEND("\"device_class\":\"%s\",", dclass);
+  APPEND("\"state_topic\":\"%s\",\"value_template\":\"%s\","
+         "\"availability_topic\":\"%s\","
+         "\"device\":{\"identifiers\":[\"%s\"],\"name\":\"%s\","
+         "\"manufacturer\":\"Cat Tracker\",\"model\":\"Homebase\"}}",
+         topicState, tmpl, topicAvail, devIdent, devName);
+  #undef APPEND
+
   mqtt.publish(topic, json, true);
 }
 
 void publishDiscovery() {
-  char ident[48], t[64];
+  char ident[48], t[64], uid[24];
   for (uint8_t i = 0; i < MAX_COLLARS; i++) {
     char* nm = catName(i);
     if (!nm || !*nm) continue;
     snprintf(ident, sizeof(ident), "cattracker_%s_cat%u", STR(BASE_ID), (unsigned)i);
 
+    // The second argument is the ENTITY name, the last is the DEVICE name. Passing
+    // the cat name as both makes Home Assistant concatenate them: every sensor for
+    // Chichi reads "Chichi Chichi". The entity name is what the sensor measures, so
+    // Home Assistant renders "Chichi signal", "Chichi battery", and the entity ids
+    // automations use come out as sensor.chichi_signal, sensor.chichi_battery.
+    //
+    // uid is passed to publishSensorConfig as a plain string, so it has to be
+    // formatted here. Passing "cat%u_signal" leaves the literal "%u" in the topic
+    // and the unique_id: all three cats publish to one topic, and because
+    // discovery is retained the last cat wins and the other two never appear.
     snprintf(t, sizeof(t), "{{ value_json.c%u.rssi / 10 }}", (unsigned)i);
-    publishSensorConfig("cat%u_signal", nm, "dBm", "signal_strength", t, ident, nm, false);
+    snprintf(uid, sizeof(uid), "cat%u_signal", (unsigned)i);
+    publishSensorConfig(uid, "signal", "dBm", "signal_strength", t, ident, nm, false);
 
     snprintf(t, sizeof(t), "{{ value_json.c%u.snr / 2 }}", (unsigned)i);
-    publishSensorConfig("cat%u_snr", nm, "dB", nullptr, t, ident, nm, false);
+    snprintf(uid, sizeof(uid), "cat%u_snr", (unsigned)i);
+    publishSensorConfig(uid, "SNR", "dB", nullptr, t, ident, nm, false);
 
     snprintf(t, sizeof(t),
              "{{ value_json.c%u.batt if value_json.c%u.batt < 255 else none }}",
              (unsigned)i, (unsigned)i);
-    publishSensorConfig("cat%u_battery", nm, "%", "battery", t, ident, nm, false);
+    snprintf(uid, sizeof(uid), "cat%u_battery", (unsigned)i);
+    publishSensorConfig(uid, "battery", "%", "battery", t, ident, nm, false);
 
     snprintf(t, sizeof(t), "{{ value_json.c%u.age }}", (unsigned)i);
-    publishSensorConfig("cat%u_last_heard", nm, "s", nullptr, t, ident, nm, false);
+    snprintf(uid, sizeof(uid), "cat%u_last_heard", (unsigned)i);
+    publishSensorConfig(uid, "last heard", "s", nullptr, t, ident, nm, false);
 
     snprintf(t, sizeof(t), "{{ value_json.c%u.last | timestamp_local }}", (unsigned)i);
-    publishSensorConfig("cat%u_last_seen", nm, nullptr, "timestamp", t, ident, nm, false);
+    snprintf(uid, sizeof(uid), "cat%u_last_seen", (unsigned)i);
+    publishSensorConfig(uid, "last seen", nullptr, "timestamp", t, ident, nm, false);
 
     snprintf(t, sizeof(t), "{{ 'ON' if value_json.c%u.in == 1 else 'OFF' }}", (unsigned)i);
-    publishSensorConfig("cat%u_in_range", nm, nullptr, "connectivity", t, ident, nm, true);
+    snprintf(uid, sizeof(uid), "cat%u_in_range", (unsigned)i);
+    publishSensorConfig(uid, "in range", nullptr, "connectivity", t, ident, nm, true);
   }
 
   snprintf(ident, sizeof(ident), "cattracker_%s", STR(BASE_ID));
@@ -348,6 +379,10 @@ void setup() {
   Serial.begin(115200);
   snprintf(topicAvail, sizeof(topicAvail), "cattracker/%s/availability", STR(BASE_ID));
   snprintf(topicState, sizeof(topicState), "cattracker/%s/state", STR(BASE_ID));
+  // setServer is what makes MQTT_BROKER mean anything. PubSubClient's default
+  // server is 0.0.0.0:1883, so without this line connect() fails forever and the
+  // base station publishes nothing at all - silently, with no error on the device.
+  mqtt.setServer(MQTT_BROKER, MQTT_PORT);
   mqtt.setKeepAlive(60);
   mqtt.setBufferSize(512);   // the state JSON is ~300 bytes; the default is 128
 
