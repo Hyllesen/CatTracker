@@ -254,7 +254,12 @@ void publishSensorConfig(const char* uid, const char* nm, const char* unit,
 }
 
 void publishDiscovery() {
-  char ident[48], t[64], uid[24];
+  // t holds the value_template. The longest one is the last-seen guard, which is
+  // 78 characters, so 64 truncated it to 63 and Home Assistant got a record that
+  // is valid JSON containing a half-written Jinja expression - which renders as
+  // nothing, and an MQTT sensor with a template that renders nothing is
+  // "unavailable". Silent on the device, and the entity looks like a dead cat.
+  char ident[48], t[128], uid[24];
   for (uint8_t i = 0; i < MAX_COLLARS; i++) {
     char* nm = catName(i);
     if (!nm || !*nm) continue;
@@ -284,11 +289,12 @@ void publishDiscovery() {
     snprintf(uid, sizeof(uid), "cat%u_battery", (unsigned)i);
     publishSensorConfig(uid, "battery", "%", "battery", t, ident, nm, false);
 
-    snprintf(t, sizeof(t), "{{ value_json.c%u.age }}", (unsigned)i);
-    snprintf(uid, sizeof(uid), "cat%u_last_heard", (unsigned)i);
-    publishSensorConfig(uid, "last heard", "s", nullptr, t, ident, nm, false);
-
-    snprintf(t, sizeof(t), "{{ value_json.c%u.last | timestamp_local }}", (unsigned)i);
+    // A collar never heard has last = 0, and "0 | timestamp_local" renders as
+    // 1970-01-01, which reads as "this cat was heard 56 years ago" rather than
+    // "never". Map 0 to none so Home Assistant shows unknown.
+    snprintf(t, sizeof(t),
+             "{{ (value_json.c%u.last | timestamp_local) if value_json.c%u.last > 0 else none }}",
+             (unsigned)i, (unsigned)i);
     snprintf(uid, sizeof(uid), "cat%u_last_seen", (unsigned)i);
     publishSensorConfig(uid, "last seen", nullptr, "timestamp", t, ident, nm, false);
 
@@ -322,7 +328,6 @@ void publishState(uint8_t freshId) {
   for (uint8_t i = 0; i < MAX_COLLARS; i++) {
     CollarState& c = collars[i];
     uint32_t ageS = c.have ? ((millis() - c.lastMs) / 1000) : 0;
-    if (ageS > 255) ageS = 255;
     bool in = c.have && (millis() - c.lastMs <= STALE_MS);
     long last = synced && c.have ? (long)(now - ageS) : 0;
     int16_t r10 = (int16_t)(c.have ? c.rssiSmoothed * 10.0f : 0.0f);

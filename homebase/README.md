@@ -159,9 +159,21 @@ that never arrived), `in` (in range), `last` (epoch of last packet). Integers, i
 roster's own scaling, because ESP8266's `printf` has no `%f` — Home Assistant's
 `value_template` divides by 10 and 2.
 
-Entities per cat: signal, SNR, battery, seconds-since-last-heard, last seen
-(timestamp), in-range (binary). Plus, on the base station device: total packets and
-unknown-id drops.
+Entities per cat: signal, SNR, battery, last seen (timestamp), in-range (binary).
+Plus, on the base station device: total packets and unknown-id drops.
+
+There is **no seconds-since-last-heard entity**. It was redundant: the duration is
+`as_timestamp(now) - as_timestamp(state)` on the last-seen sensor, so a template
+sensor gets it without a second entity. The state JSON still carries `age` per
+collar, because that is the raw fact and a template can use it directly.
+
+**`age` is not clamped.** It used to be clamped to 255 s, and `last` was computed
+from the clamped value, so a collar missing for 20 minutes reported
+`last = now - 255`: Home Assistant showed it as heard four minutes ago, and that
+value moved forward with the clock for as long as it stayed missing. Past 255 s
+both sensors made a missing cat look healthy, which is the exact failure the base
+station exists to detect. `age` is a `uint32_t` printed with `%u`, so it carries
+hours with no packing constraint.
 
 **The last-will is the point.** The availability topic carries a last-will of
 `offline`. If the base station loses power or WiFi, the broker fires it and Home
