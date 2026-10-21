@@ -124,6 +124,31 @@ python3 tools/test_monitor.py   # checks the Report format against the parser
 The reasoning is in [docs/adr/0001](./docs/adr/0001-laptop-watches-over-cable.md),
 and the words the project uses are in [GLOSSARY.md](./GLOSSARY.md).
 
+## Homebase — the base station
+
+The house-facing half: a fixed, powered ESP8266 + RA-02 that receives collar pings
+and publishes them to Mosquitto on m710q, which Home Assistant consumes.
+
+```bash
+arduino-cli compile --fqbn "esp8266:esp8266:generic" \
+  --build-property "compiler.cpp.extra_flags=-DBASE_ID=base1 -DCAT_NAMES=Chichi|Onanda|Chacha" \
+  homebase
+arduino-cli upload --fqbn "esp8266:esp8266:generic" --port /dev/cu.usbserial-0001 homebase
+```
+
+Why a separate board: adding WiFi + MQTT to the handheld took it to **99% of the
+ESP32-C3 app partition** (1,308,309 of 1,310,720 bytes), and the walk device and the
+base station are never in the same place at the same hour. A base station has no BLE,
+so it has room — this sketch is 26% of flash.
+
+**The phone app does not talk to a base station.** It has no BLE. If you want the app,
+carry the handheld.
+
+Wiring, the two pin traps, power, MQTT topics, Home Assistant discovery and the
+bring-up checklist are in [homebase/README.md](./homebase/README.md). Home Assistant
+has **no MQTT integration configured today**, so add it pointing at `m710q:1883`
+before expecting entities to appear.
+
 ## Working on a new collar
 
 [Collar/README.md](collar/README.md) has the full story: the wiring table,

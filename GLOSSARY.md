@@ -18,9 +18,29 @@ the roster.
 _Avoid_: Address, node number, MAC
 
 **Handheld**:
-The receiver a person carries: ESP32-C3 plus a LoRa module. It is the only
-device that ever holds collar data, and the only thing the phone talks to.
-_Avoid_: Receiver, base station (a base station is a separate, unbuilt thing)
+The receiver a person carries: ESP32-C3 plus a LoRa module. It is the only device
+that ever holds collar data, and the only thing the phone talks to.
+_Avoid_: Receiver, base station
+
+**Base station**:
+A fixed, powered LoRa receiver that reports to the house over WiFi. It has no BLE, so
+the phone app does not talk to it. Its value is placement: it sits near where the cats
+go and never moves.
+_Avoid_: Hub, node, homebase (that is the sketch and board, not the role)
+
+**Homebase**:
+The ESP8266 + RA-02 device and sketch that implements a base station.
+_Avoid_: Base station (for the role), receiver
+
+**Blind**:
+The house's state when a base station has stopped reporting. A fact about the plumbing.
+_Avoid_: Offline, disconnected, down
+
+**Missing**:
+A collar not heard for longer than a threshold. A fact about the cat. Distinct from
+Blind: the two look identical from the app, and a notification that cannot tell them
+apart gets ignored.
+_Avoid_: Lost, gone, out of range
 
 **Beacon**:
 One packet heard by the handheld from one collar. A beacon is an event, not a
@@ -54,10 +74,10 @@ A collar whose entry was updated by the packet that just arrived.
 _Avoid_: New, live, active
 
 **Stale**:
-A collar that was heard, and has since gone quiet for longer than one ping
-interval plus margin. Stale means "not answering", which is a different problem
-from "never heard".
-_Avoid_: Lost, offline, missing
+A collar that was heard, and has since gone quiet for longer than one ping interval
+plus margin — 15 s in the firmware. Stale means "not answering", which is a
+different problem from "never heard", and a different problem again from Missing.
+_Avoid_: Lost, offline, Missing
 
 **Missed**:
 A packet a collar sent that the handheld never heard, counted from gaps in the

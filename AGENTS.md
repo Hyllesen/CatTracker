@@ -83,8 +83,10 @@ number and ignore the function label.
   between reboots. Asserting DTR restarts the board and drops the phone's BLE
   connection, so a run of the monitor is not a harmless act of curiosity — it
   resets the handheld. The firmware does not need DTR, so keep it low.
-- Match the two firmwares on every radio change. See
-  "Air settings (must match the handheld)" in `collar/README.md`.
+- Match **all three** firmwares on every radio change: `collar/`, `handheld_ble/` and
+  `homebase/`. See "Air settings (must match the handheld)" in `collar/README.md`. A
+  homebase built with different air settings receives nothing, and that failure is
+  indistinguishable from a dead module.
 - **The packet frame has to match too, in three places:** the collar's
   6-byte frame, the handheld's parser and the app's decoder. See "Packet
   format (must match the handheld)" in `collar/README.md` and
