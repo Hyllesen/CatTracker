@@ -11,6 +11,22 @@ below.
 The SPI pins are **bit-banged in software** — the nRF52840's hardware SPI is
 not used. See "Why bit-banged SPI" below.
 
+## The two boards
+
+The collar is two modules and a cell. Both boards label their pads directly,
+and this project uses those labels verbatim, so the pin-side photos are the
+ones worth keeping to hand (see "Wiring").
+
+**TENSTAR nRF52840 Pro Micro** — component side, then the labelled back:
+
+![nRF52840 Pro Micro](../pictures/nrf52840/nrf52840-1.webp)
+![nRF52840 Pro Micro, back: pin labels](../pictures/nrf52840/nrf52840-back.webp)
+
+**RA-02 (SX1278, 433 MHz)** — shielded top, then the pinout:
+
+![RA-02](../pictures/ra-02/ra-02-01.jpg)
+![RA-02 pinout](../pictures/ra-02/ra-02-02.jpg)
+
 ## Board selection in Arduino
 
 Board: **Adafruit Feather nRF52840 Express** (`adafruit:nrf52:feather52840`)

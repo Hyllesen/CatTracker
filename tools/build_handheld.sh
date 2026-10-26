@@ -2,14 +2,14 @@
 #
 # Build and flash the handheld (ESP32-C3 + RA-02).
 #
-# Defaults to the BLE sketch, handheld_ble/, because that is the one the
-# CatTrackApp talks to. Pass a sketch directory to build the other one.
+# Builds the BLE sketch, handheld_ble/, because that is the one the CatTrackApp
+# talks to. There is no second handheld sketch: the serial-only one was deleted
+# (see multi-collar.md).
 #
 # Usage:
 #   tools/build_handheld.sh                    build + flash the BLE firmware
 #   tools/build_handheld.sh --build-only       compile only, do not flash
 #   tools/build_handheld.sh --port <device>    pick the port yourself
-#   tools/build_handheld.sh handheld           build + flash handheld/ instead
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # WHY --board-options CDCOnBoot=cdc IS NOT OPTIONAL
@@ -50,7 +50,7 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="${2:-}"; shift 2 ;;
     -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) echo "unknown option: $1" >&2; exit 1 ;;
-    *) SKETCH_DIR="$1"; shift ;;
+    *) echo "unexpected argument: $1 (only --build-only and --port are accepted)" >&2; exit 1 ;;
   esac
 done
 
@@ -81,14 +81,6 @@ fi
 
 SKETCH="$ROOT/$SKETCH_DIR"
 [[ -d "$SKETCH" ]] || { echo "error: no such sketch directory: $SKETCH" >&2; exit 1; }
-
-if [[ "$SKETCH_DIR" != "handheld_ble" ]]; then
-  cat >&2 <<'EOF'
-warning: handheld/ is the serial-only build. It has no BLE, so the CatTrackApp
-         will NOT find the handheld while it is flashed. Use it for walk-test
-         and CSV logging only.
-EOF
-fi
 
 echo "==> building $SKETCH_DIR for $FQBN ($BOARD_OPTIONS)"
 "$CLI" compile --fqbn "$FQBN" --board-options "$BOARD_OPTIONS" "$SKETCH"

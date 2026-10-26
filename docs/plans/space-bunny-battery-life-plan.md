@@ -1,8 +1,15 @@
 # Collar battery life — plan to exceed 24 hours
 
-Status: **planned, not implemented.** No source has been changed.
+Status: **implemented.** Merged in `89f6a7c` (radio and core sleep, 8 s beacon
+interval). This document is kept as the reasoning behind those changes, not as
+a to-do list.
 
 Written 2026-10-14. Revised 2026-10-14 after review — see Revision notes.
+
+> **Note on paths.** This document was written when a second, serial-only
+> handheld sketch existed at `handheld/`. That sketch has since been deleted
+> (see `multi-collar.md`); the only handheld firmware is `handheld_ble/`.
+> References to `handheld/handheld.ino` below are historical.
 
 ## Goal
 

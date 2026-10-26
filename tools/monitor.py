@@ -2,7 +2,7 @@
 """Watch the handheld from a laptop: the Report, over the USB cable.
 
     python3 tools/monitor.py                  live dashboard, Ctrl-C to stop
-    python3 tools/monitor.py --csv > walk.csv  raw rows, for analyze_walk.py
+    python3 tools/monitor.py --csv > walk-$(date +%m%d-%H%M).csv   rows for analyze_walk.py
     python3 tools/monitor.py --json            one JSON object per report
     python3 tools/monitor.py --duration 120    stop after 120 s
     python3 tools/monitor.py --names cats.json  show cat names
