@@ -142,7 +142,7 @@ def main():
                 max(int(f[8]) for f in fields if f[2] == "0") == 3)
     ok &= check("all 12 columns present", all(len(f) == 12 for f in fields),
                 [len(f) for f in fields])
-    ok &= check("raw RSSI carried, and not the same number as smoothed",
+    ok &= check("raw RSSI column carried alongside the report value",
                 fields[0][5] == "-69.5" and fields[0][4] == "-70.0",
                 fields[0][4:6])
 

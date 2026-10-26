@@ -247,7 +247,7 @@ Two further safety measures:
 | File | Change |
 |---|---|
 | `collar/collar.ino` | Binary frame builder, `COLLAR_ID` build flag, per-collar period, `DEVICEID` in the `v` log |
-| `handheld_ble/handheld_ble.ino` | `CollarState[3]`, binary + legacy parser, per-collar smoothing/staleness, 20-byte publisher, `RX_TIMEOUT_MS` 8200 → 8474 |
+| `handheld_ble/handheld_ble.ino` | `CollarState[3]`, binary + legacy parser, per-collar latest-packet RSSI/staleness, 20-byte publisher, `RX_TIMEOUT_MS` 8200 → 8474 |
 | `transmitter/transmitter.ino` | Binary frames + `-DFAKE_COLLARS=n` to fake 3 cats from one spare board |
 | `CatTrackApp/src/signal.ts` | `decodeSignal` → `decodeRoster` returning `Roster { collars: Collar[] }`; `decodeLegacy` kept for the old packet |
 | `CatTrackApp/src/ble.ts` | `readRoster()` on connect |

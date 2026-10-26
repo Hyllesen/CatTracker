@@ -20,7 +20,9 @@
  *
  * The signal strength percentage is NOT on the wire: it is a straight
  * function of the RSSI, so the phone derives it from RSSI_CEIL/RSSI_FLOOR
- * below and the two never have to agree about it.
+ * below and the two never have to agree about it. Nothing shows it: the
+ * screen reads in dBm and dB, the units the radio measures in. The percentage
+ * survives only to choose the tone step and the colour.
  */
 
 export const SERVICE_UUID = '8e7a1b20-3f4d-4c8e-9a1f-2b6d5e4c3a21';
@@ -53,11 +55,12 @@ export const ROSTER_FLAG_LOW_BATT = 0x08;
 export const BATTERY_UNKNOWN = 255;
 
 /**
- * RSSI range mapped onto the signal bar.
+ * RSSI range mapped onto the 0..100 strength scale.
  *
  * These used to live in the handheld firmware, which also computed the
  * percentage. The mapping is a display concern, so it belongs here, where
- * the bar is drawn - one copy, no cross-firmware agreement needed.
+ * the tone and the colour are chosen - one copy, no cross-firmware agreement
+ * needed.
  *
  * The floor is deliberately far below what has actually been measured: field
  * testing decoded packets down to -140 dBm, and an earlier -75 floor mapped
@@ -78,11 +81,14 @@ export type Collar = {
   stale: boolean;
   /** True when the collar reports a low battery. */
   lowBattery: boolean;
-  /** Smoothed RSSI in dBm, or null before the first packet arrives. */
+  /** RSSI of the latest packet in dBm, or null before the first packet. */
   rssi: number | null;
-  /** Demodulator SNR in dB, or null before the first packet arrives. */
+  /** Demodulator SNR of that same packet in dB, or null before the first. */
   snr: number | null;
-  /** 0..100, mapped from the measured RSSI range. */
+  /**
+   * 0..100 strength derived from rssi, for the tone step and the colour.
+   * Never rendered as a number: the screen reads in dBm and dB.
+   */
   percent: number;
   /** Seconds since this collar's last packet was heard. */
   ageSeconds: number;

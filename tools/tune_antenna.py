@@ -81,8 +81,8 @@ except ImportError:
 
 # The handheld prints RSSI and this tool has to read it.
 #
-#   handheld_ble/handheld_ble.ino   [+] pkt #1 id=0  RSSI -44.0 dBm  smoothed -43.7
-#                                    dBm  snr 11.0 dB  batt 78%
+#   handheld_ble/handheld_ble.ino   [+] pkt #1 id=0  RSSI -44.0 dBm  snr 11.0 dB
+#                                    batt 78%
 #
 # The line can wrap mid-line depending on firmware and terminal width, so
 # match on structure rather than on lines.

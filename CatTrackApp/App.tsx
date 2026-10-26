@@ -64,8 +64,6 @@ import {
   tonesEnabled,
 } from './src/tone';
 
-const BAR_SEGMENTS = 10;
-
 /** Preset distance waypoints. Labels are written into the CSV next to each
  *  marker so the exported file is self-describing on its own. */
 const MARKERS = ['5m', '10m', '25m', '50m', '100m', 'clear'];
@@ -92,28 +90,9 @@ function requestPermissions(): Promise<boolean> {
   });
 }
 
-function SignalBar({percent}: {percent: number}) {
-  const lit = Math.round((percent / 100) * BAR_SEGMENTS);
-  return (
-    <View style={styles.bar} accessibilityLabel={`Signal ${percent} percent`}>
-      {Array.from({length: BAR_SEGMENTS}).map((_, i) => (
-        <View
-          key={i}
-          style={[
-            styles.segment,
-            {
-              backgroundColor: i < lit ? barColor(percent) : '#243040',
-            },
-          ]}
-        />
-      ))}
-    </View>
-  );
-}
-
 // Green when close, amber in the middle, red when weak. Deliberately not a
 // rainbow - two hues plus neutral reads faster than many.
-function barColor(percent: number): string {
+function signalColor(percent: number): string {
   if (percent >= 66) {
     return '#2ecc71';
   }
@@ -127,11 +106,15 @@ function barColor(percent: number): string {
  * The big line under the roster.
  *
  * When there is a collar to follow, this is its signal level in dBm - the
- * number the radio actually measured. It used to be a proximity phrase
- * ("Very close - check the bushes") instead, which says less: the phrase
- * cannot be compared against a reading from another walk, and two people
- * looking at the same screen cannot tell whether "getting warmer" means
- * better or worse than last time.
+ * number the radio actually measured, for the packet that just arrived. It
+ * used to be a proximity phrase ("Very close - check the bushes") instead,
+ * which says less: the phrase cannot be compared against a reading from
+ * another walk, and two people looking at the same screen cannot tell whether
+ * "getting warmer" means better or worse than last time.
+ *
+ * The dBm is the largest type on the screen and it belongs to the cat being
+ * followed; every row carries the same two numbers in a smaller size, so the
+ * roster can be compared at a glance and the big one says where to walk.
  *
  * The colour still carries the same three-way read - green, amber, red - so
  * the glanceable part survives the change.
@@ -142,15 +125,16 @@ export function headline(
   collar: Collar | null,
   heard: number,
   connected: boolean,
-): {text: string; tone: string; reading: boolean} {
+): {text: string; snr: number | null; tone: string; reading: boolean} {
   if (collar && collar.rssi !== null) {
     return {
       text: collar.rssi.toFixed(1),
+      snr: collar.snr,
       // A collar that has gone quiet turns the reading red whatever the last
       // value was. The number is still the last thing the radio heard, but
       // it is not a live reading any more, and a frozen green number would
       // say "you are there" when the cat has walked off.
-      tone: collar.stale ? '#e74c3c' : barColor(collar.percent),
+      tone: collar.stale ? '#e74c3c' : signalColor(collar.percent),
       reading: true,
     };
   }
@@ -159,12 +143,22 @@ export function headline(
     // thing from "nothing heard yet", and it is the situation that
     // matters: a collar that has stopped answering is a cat that has
     // stopped answering.
-    return {text: 'All the collars have gone quiet', tone: '#e74c3c', reading: false};
+    return {
+      text: 'All the collars have gone quiet',
+      snr: null,
+      tone: '#e74c3c',
+      reading: false,
+    };
   }
   if (!connected) {
-    return {text: 'Press Connect to start', tone: '#7f8c8d', reading: false};
+    return {text: 'Press Connect to start', snr: null, tone: '#7f8c8d', reading: false};
   }
-  return {text: 'Listening for the collars...', tone: '#7f8c8d', reading: false};
+  return {
+    text: 'Listening for the collars...',
+    snr: null,
+    tone: '#7f8c8d',
+    reading: false,
+  };
 }
 
 /** Fallback beacon period before any have been observed, matches the collar's
@@ -241,7 +235,15 @@ function BeepIndicator({
 }
 
 /**
- * One cat: name, signal bar, and the details worth reading when you stop.
+ * One cat: name, the two radio numbers, and the details worth reading when you
+ * stop.
+ *
+ * dBm and SNR sit side by side because they answer different questions about
+ * the same packet - how much signal arrived, and how cleanly it could be
+ * demodulated - and neither can be inferred from the other. There is no
+ * percentage and no bar: a 0-100 scale has no meaning to compare against a
+ * datasheet or another walk, and two numbers large enough to read say more
+ * than a bar that has to be squinted at anyway.
  *
  * Tapping the row follows this cat - the big reading above becomes its
  * signal, and the tone follows it too, so the beep and the display always
@@ -275,18 +277,24 @@ function CollarRow({
         ? 'batt --'
         : `batt ${collar.batteryPercent}%`,
     );
-    if (collar.snr !== null) {
-      detail.push(`snr ${collar.snr.toFixed(1)} dB`);
-    }
     detail.push(`${collar.ageSeconds}s ago`);
   }
+
+  // Same rule as the big reading: a lost collar goes red whatever its last
+  // signal was, because a green number would say "the cat is here" when the
+  // cat stopped answering.
+  const tone = collar.stale ? '#e74c3c' : signalColor(collar.percent);
 
   return (
     <Pressable
       style={[styles.row, isFocused ? styles.rowFocused : null]}
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`${name}, ${collar.percent} percent signal`}>
+      accessibilityLabel={
+        collar.rssi === null
+          ? `${name}, no reading`
+          : `${name}, ${collar.rssi.toFixed(1)} dBm`
+      }>
       <View style={styles.rowHead}>
         <Text style={[styles.rowName, isFocused ? styles.rowNameFocused : null]}>
           {name}
@@ -308,11 +316,15 @@ function CollarRow({
           <Text style={styles.editIcon}>✎</Text>
         </Pressable>
       </View>
-      <View style={styles.rowBar}>
-        <View style={styles.rowBarTrack}>
-          <SignalBar percent={collar.percent} />
-        </View>
-        <Text style={styles.rowPercent}>{collar.percent}%</Text>
+      <View style={styles.rowReadings}>
+        <Text style={[styles.rowDbm, {color: tone}]}>
+          {collar.rssi === null ? '--' : collar.rssi.toFixed(1)}
+        </Text>
+        <Text style={styles.rowDbmUnit}>dBm</Text>
+        <Text style={styles.rowSnr}>
+          {collar.snr === null ? '--' : collar.snr.toFixed(1)}
+        </Text>
+        <Text style={styles.rowSnrUnit}>dB snr</Text>
       </View>
       <Text style={styles.rowDetail}>
         {detail.length ? detail.join(' · ') : 'not heard yet'}
@@ -663,6 +675,11 @@ function Tracker() {
         <View style={styles.headlineRow}>
           <Text style={[styles.headline, {color: head.tone}]}>{head.text}</Text>
           <Text style={[styles.headlineUnit, {color: head.tone}]}>dBm</Text>
+          {head.snr !== null ? (
+            <Text style={styles.headlineSnr}>
+              {`snr ${head.snr.toFixed(1)} dB`}
+            </Text>
+          ) : null}
         </View>
       ) : (
         <Text style={[styles.headlineStatus, {color: head.tone}]}>
@@ -672,7 +689,7 @@ function Tracker() {
 
       <Text style={styles.meta}>
         {followed && followed.rssi !== null
-          ? `${nameFor(names, followed.id)} · signal ${followed.percent}% · tone step ${step}`
+          ? `${nameFor(names, followed.id)} · tone step ${step}`
           : 'no signal yet'}
       </Text>
 
@@ -901,35 +918,40 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     fontWeight: '600',
   },
-  rowBar: {
+  rowReadings: {
     flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
+    alignItems: 'baseline',
+    marginTop: 6,
   },
-  rowBarTrack: {
-    flex: 1,
-  },
-  rowPercent: {
-    color: '#95a5a6',
-    fontSize: 13,
-    width: 44,
-    textAlign: 'right',
+  // The roster's own numbers. Big enough to read at arm's length while
+  // walking, small enough that the followed cat's reading above stays the
+  // biggest thing on the screen.
+  rowDbm: {
+    fontSize: 26,
+    fontWeight: '700',
     fontVariant: ['tabular-nums'],
+  },
+  rowDbmUnit: {
+    color: '#5d6d7e',
+    fontSize: 12,
+    marginLeft: 5,
+  },
+  rowSnr: {
+    color: '#95a5a6',
+    fontSize: 18,
+    marginLeft: 20,
+    fontVariant: ['tabular-nums'],
+  },
+  rowSnrUnit: {
+    color: '#5d6d7e',
+    fontSize: 12,
+    marginLeft: 5,
   },
   rowDetail: {
     color: '#5d6d7e',
     fontSize: 11,
     marginTop: 6,
     fontVariant: ['tabular-nums'],
-  },
-  bar: {
-    flexDirection: 'row',
-    height: 14,
-  },
-  segment: {
-    flex: 1,
-    marginHorizontal: 2,
-    borderRadius: 3,
   },
   headlineRow: {
     flexDirection: 'row',
@@ -945,6 +967,12 @@ const styles = StyleSheet.create({
   headlineUnit: {
     fontSize: 18,
     marginLeft: 6,
+  },
+  headlineSnr: {
+    color: '#95a5a6',
+    fontSize: 18,
+    marginLeft: 18,
+    fontVariant: ['tabular-nums'],
   },
   headlineStatus: {
     textAlign: 'center',

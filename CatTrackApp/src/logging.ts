@@ -70,11 +70,10 @@ function timestamp(): string {
  */
 const HEADER = [
   '# Cat Tracker range test',
-  '# Note: rssi_dbm is the handheld SMOOTHED value (moving average). The raw',
-  '#       column duplicates it rather than carrying an unsmoothed sample, so',
-  '#       the analyzer\'s "raw noise" figure describes the firmware averaging',
-  '#       window, not the RF noise floor. Fixing that needs a firmware change',
-  '#       to put the unsmoothed reading on the wire.',
+  '# Note: rssi_dbm is the latest packet\'s reading, not an average - the',
+  '#       handheld publishes exactly what the radio measured for the packet',
+  '#       that just arrived. The raw column carries the same number; it is',
+  '#       kept so the column layout does not change.',
   '# The id column is the collar that sent the packet; -1 is a marker row.',
   't_ms,id,rssi_dbm,snr_db,flags,raw',
 ].join('\n');

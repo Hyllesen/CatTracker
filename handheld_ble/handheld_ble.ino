@@ -103,11 +103,20 @@ const uint8_t ROSTER_FLAG_STALE    = 0x04;
 const uint8_t ROSTER_FLAG_LOW_BATT = 0x08;
 
 // ---- Signal quality ----
-// 8 s collar pings, so 12 packets is ~96 s of history. Measured noise floor is
-// only ~0.7 dB, so this smooths multipath spikes; at this interval the bar
-// reacts a little more slowly than it did at 5 s, which is the cost of the
-// longer beacon period.
-const uint8_t SMOOTH_N = 12;
+// The RSSI published to the phone is the reading for the last packet heard,
+// not a moving average.
+//
+// It used to be a 12-sample mean (~96 s of history at an 8 s ping) to smooth
+// multipath spikes. That made the number lag the cat: walking past a collar
+// changed nothing on screen for a minute and a half, and a lagging reading is
+// worse than a noisy one when the number is being used to find something.
+// Measured noise is only ~0.7 dB, and the tone moves in 13.5 dB steps (the
+// 135 dB display range over 10 steps), so one packet's worth of jitter never
+// reaches the audio.
+//
+// SNR has always been the last packet's, and now both numbers describe the
+// same packet.
+//
 // Must comfortably exceed one collar ping interval, or a couple of missed
 // packets trip "signal lost" while the collar is perfectly fine.
 const uint32_t STALE_MS = 15000;
@@ -157,10 +166,8 @@ struct CollarState {
   bool     seqValid;
   uint8_t  batteryPct;      // 255 = unknown
   uint8_t  flags;           // bit0 LOW_BATT, carried from the collar
-  float    rssiHistory[SMOOTH_N];
-  uint8_t  idx, count;
-  float    rssiSmoothed;
-  float    snrLast;         // SNR of this collar's last packet
+  float    rssiLast;        // RSSI of this collar's last packet, dBm
+  float    snrLast;         // SNR of this collar's last packet, dB
   uint32_t lastMs;
   uint32_t packets;
   uint32_t missed;          // seq gaps: packets we never heard
@@ -174,15 +181,6 @@ static portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 uint8_t rxBuf[64];
 uint32_t packetCount = 0;
 uint32_t unknownIdCount = 0;
-
-void pushRssi(CollarState& c, float rssi) {
-  c.rssiHistory[c.idx] = rssi;
-  c.idx = (c.idx + 1) % SMOOTH_N;
-  if (c.count < SMOOTH_N) c.count++;
-  float sum = 0.0;
-  for (uint8_t i = 0; i < c.count; i++) sum += c.rssiHistory[i];
-  c.rssiSmoothed = sum / c.count;
-}
 
 // Legacy collar payload, "CAT-01;bat=87". Accepted for one release and
 // mapped onto collar 0, so cats can be swapped one at a time instead of
@@ -266,7 +264,7 @@ int8_t applyPacket(const uint8_t* buf, size_t len, float rssi, float snr) {
   c.batteryPct = batt;
   c.flags = flags;
   c.snrLast = snr;
-  pushRssi(c, rssi);
+  c.rssiLast = rssi;
   c.lastMs = millis();
   c.packets++;
   return (int8_t)id;
@@ -311,7 +309,7 @@ uint8_t buildRoster(uint8_t* out, int8_t freshId) {
 
     *p++ = flags;
 
-    int16_t r10 = (int16_t)(c.have ? c.rssiSmoothed * 10.0f : 0.0f);
+    int16_t r10 = (int16_t)(c.have ? c.rssiLast * 10.0f : 0.0f);
     *p++ = (uint8_t)(r10 & 0xFF);
     *p++ = (uint8_t)(r10 >> 8);
 
@@ -529,8 +527,10 @@ void printCollars() {
       continue;
     }
     Serial.print(F("  rssi "));
-    Serial.print(c.rssiSmoothed, 1);
-    Serial.print(F(" dBm  packets "));
+    Serial.print(c.rssiLast, 1);
+    Serial.print(F(" dBm  snr "));
+    Serial.print(c.snrLast, 1);
+    Serial.print(F(" dB  packets "));
     Serial.print(c.packets);
     Serial.print(F("  missed "));
     Serial.print(c.missed);
@@ -639,8 +639,6 @@ void loop() {
         Serial.print(id);
         Serial.print(F("  RSSI "));
         Serial.print(rssi, 1);
-        Serial.print(F(" dBm  smoothed "));
-        Serial.print(c.rssiSmoothed, 1);
         Serial.print(F(" dBm  snr "));
         Serial.print(snr, 1);
         Serial.print(F(" dB"));

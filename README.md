@@ -42,8 +42,9 @@ arduino-cli compile --fqbn "esp32:esp32:esp32c3" --board-options "CDCOnBoot=cdc"
 ## The phone app
 
 `CatTrackApp/` is a React Native app. It connects to the handheld over BLE and
-shows one row per cat — name, signal bar, battery, and how long ago that cat
-was heard.
+shows one row per cat — name, the dBm and SNR of that cat's latest packet,
+battery, and how long ago that cat was heard. The cat being followed has its
+dBm in the largest type on the screen.
 
 - **Tap a row** to follow that cat: the big reading becomes its signal, and
   the tone follows it too, so the beep and the display always agree on which
@@ -87,11 +88,11 @@ Plug the handheld into USB and run:
 python3 tools/monitor.py
 ```
 
-A live dashboard: one row per cat, smoothed RSSI, a signal bar, SNR, how long ago
-that cat answered, battery, packets heard, and packets the collar sent that
-never arrived. Ctrl-C prints a summary. `--csv` gives rows you can pipe into
-`analyze_walk.py`, `--json` one object per report, and `--duration 120` stops by
-itself.
+A live dashboard: one row per cat, RSSI of its latest packet, a signal bar, SNR,
+how long ago that cat answered, battery, packets heard, and packets the collar
+sent that never arrived. Ctrl-C prints a summary. `--csv` gives rows you can
+pipe into `analyze_walk.py`, `--json` one object per report, and `--duration
+120` stops by itself.
 
 Cat names come from `cats.json` in the repo root, read automatically:
 

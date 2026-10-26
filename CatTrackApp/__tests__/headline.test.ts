@@ -31,10 +31,13 @@ function collar(overrides: Partial<Collar> = {}): Collar {
   };
 }
 
-test('a collar to follow shows its reading in dBm', () => {
-  const h = headline(collar({rssi: -25.4}), 1, true);
+test('a collar to follow shows its reading in dBm and its SNR', () => {
+  const h = headline(collar({rssi: -25.4, snr: 12}), 1, true);
   expect(h.reading).toBe(true);
   expect(h.text).toBe('-25.4');
+  // Both numbers come from the same packet: how much arrived, and how
+  // cleanly it demodulated.
+  expect(h.snr).toBe(12);
 });
 
 test('the reading is coloured by strength, not by the wording it replaced', () => {
@@ -47,11 +50,13 @@ test('with every collar gone quiet it says so instead of a reading', () => {
   const h = headline(null, 2, true);
   expect(h.reading).toBe(false);
   expect(h.text).toBe('All the collars have gone quiet');
+  expect(h.snr).toBeNull();
 });
 
 test('with nothing heard it says what to do', () => {
   expect(headline(null, 0, false).text).toBe('Press Connect to start');
   expect(headline(null, 0, true).text).toBe('Listening for the collars...');
+  expect(headline(null, 0, true).snr).toBeNull();
 });
 
 test('a collar that has never spoken is not a reading', () => {

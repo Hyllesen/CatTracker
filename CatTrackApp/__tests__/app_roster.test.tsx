@@ -154,7 +154,7 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-test('shows the dBm of the cat it is following', async () => {
+test('shows the dBm and the SNR of the cat it is following', async () => {
   mockRoster = rosterBytes([
     {have: false},
     {have: true, fresh: true, rssi: -25.4, snr: 12, age: 3, battery: 95},
@@ -163,12 +163,38 @@ test('shows the dBm of the cat it is following', async () => {
   const tree = await connect();
 
   const texts = textsOf(tree);
-  expect(texts).toContain('-25.4');
+  // Once as the big reading, once in that cat's own row.
+  expect(texts.filter(t => t === '-25.4')).toHaveLength(2);
   expect(texts).toContain('dBm');
+  // The SNR is a reading in its own right, not a trailing detail: once in the
+  // big line and once in that cat's row.
+  expect(texts.filter(t => t === '12.0')).toHaveLength(1);
+  expect(texts).toContain('snr 12.0 dB');
+  expect(texts).toContain('dB snr');
   // The cat's name moved down to the line under the reading.
   expect(texts.some(t => t.startsWith('Cat 2 ·'))).toBe(true);
   // And the proximity wording it replaced is gone.
   expect(texts).not.toContain('Very close - check the bushes');
+
+  await ReactTestRenderer.act(async () => {
+    tree.unmount();
+  });
+});
+
+test('the percentage bar and its number are gone', async () => {
+  mockRoster = rosterBytes([
+    {have: true, fresh: true, rssi: -25.4, snr: 12, age: 1, battery: 95},
+    {have: false},
+    {have: false},
+  ]);
+  const tree = await connect();
+
+  const texts = textsOf(tree);
+  // -25.4 dBm is 100% on the old scale, an easy number to leave behind by
+  // accident. A bare percentage anywhere means the bar is still there.
+  expect(texts.some(t => /^\d+%$/.test(t))).toBe(false);
+  expect(texts).not.toContain('100%');
+  expect(texts.some(t => /percent/i.test(t))).toBe(false);
 
   await ReactTestRenderer.act(async () => {
     tree.unmount();
@@ -185,14 +211,17 @@ test('tapping a row follows that cat instead of the closest one', async () => {
   ]);
   const tree = await connect();
 
-  expect(textsOf(tree)).toContain('-25.4');
+  // -25.4 appears twice: the big reading and collar 1's row.
+  expect(textsOf(tree).filter(t => t === '-25.4')).toHaveLength(2);
 
   // Follow collar 0 instead.
-  await press(tree, 'Cat 1, 74 percent signal');
+  await press(tree, 'Cat 1, -80.0 dBm');
 
   const texts = textsOf(tree);
-  expect(texts).toContain('-80.0');
-  expect(texts).not.toContain('-25.4');
+  // Now -80.0 is the big reading as well as collar 0's row, and -25.4 is
+  // only collar 1's row.
+  expect(texts.filter(t => t === '-80.0')).toHaveLength(2);
+  expect(texts.filter(t => t === '-25.4')).toHaveLength(1);
   expect(texts.some(t => t.startsWith('Cat 1 ·'))).toBe(true);
   // The row says which one is being followed.
   expect(texts).toContain('following');
@@ -210,11 +239,11 @@ test('tapping the focused row again goes back to the closest one', async () => {
   ]);
   const tree = await connect();
 
-  await press(tree, 'Cat 1, 74 percent signal');
-  expect(textsOf(tree)).toContain('-80.0');
+  await press(tree, 'Cat 1, -80.0 dBm');
+  expect(textsOf(tree).filter(t => t === '-80.0')).toHaveLength(2);
 
-  await press(tree, 'Cat 1, 74 percent signal');
-  expect(textsOf(tree)).toContain('-25.4');
+  await press(tree, 'Cat 1, -80.0 dBm');
+  expect(textsOf(tree).filter(t => t === '-25.4')).toHaveLength(2);
 
   await ReactTestRenderer.act(async () => {
     tree.unmount();
@@ -234,7 +263,7 @@ test('the rename button is on the row, not the row itself', async () => {
   const before = textsOf(tree);
   await press(tree, 'Rename Cat 1');
 
-  expect(textsOf(tree)).toContain('-25.4');
+  expect(textsOf(tree).filter(t => t === '-25.4')).toHaveLength(2);
   expect(textsOf(tree)).not.toContain('following');
   expect(before).not.toContain('following');
 

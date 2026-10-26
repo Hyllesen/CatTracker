@@ -67,8 +67,10 @@ MAX_COLLARS = 3
 BATTERY_UNKNOWN = 255
 FLAG_HAVE, FLAG_FRESH, FLAG_STALE, FLAG_LOW_BATT = 1, 2, 4, 8
 
-# Must match CatTrackApp/src/signal.ts, so the bar here means the same thing as
-# the bar on the phone.
+# Must match CatTrackApp/src/signal.ts, so the percentage here means the same
+# thing as the colour and the tone step on the phone. The phone no longer
+# shows a percentage; this dashboard keeps one because a numeric bar is how a
+# terminal reports a range.
 RSSI_CEIL, RSSI_FLOOR = -45.0, -180.0
 
 # Fields per collar, in the order the firmware writes them.
@@ -172,7 +174,7 @@ class Collar:
         self.stale = False
         self.low = False
         self.fresh = False
-        self.samples = []      # smoothed RSSI, one per report that had a packet
+        self.samples = []      # reported RSSI, one per report that had a packet
         self.first = None
         self.last = None
 

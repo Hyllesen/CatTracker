@@ -52,9 +52,10 @@ def load(path):
             # tools/monitor.py --csv. The flags here are the roster flags
             # (bit1 FRESH, bit2 STALE), not the walk-test marker bits, and a
             # USB cable has no BOOT button, so there are no waypoints.
-            # rssi_raw is the unsmoothed reading, which is what the noise floor
-            # needs: a spread of smoothed samples is the smoothing, not the
-            # multipath.
+            # rssi_raw is the same reading as rssi now that the handheld stops
+            # at the latest packet instead of averaging: both columns are the
+            # unsmoothed value, and the spread is the RF noise floor rather
+            # than a window the firmware chose.
             try:
                 flags = int(parts[11])
                 rows.append({

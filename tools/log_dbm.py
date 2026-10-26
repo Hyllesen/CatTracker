@@ -29,11 +29,11 @@ except ImportError:
 
 VID_ESPRESSIF = 0x303A   # the ESP32-C3 handheld
 
-# e.g. "[+] pkt #45  RSSI -23.0 dBm  smoothed -23.0 dBm  snr 13.3 dB"
+# e.g. "[+] pkt #45  RSSI -23.0 dBm  snr 13.3 dB"
 import re
 
 PACKET = re.compile(
-    r"smoothed\s+(-?[\d.]+)\s*dBm\s+snr\s+(-?[\d.]+)\s*dB"
+    r"RSSI\s+(-?[\d.]+)\s*dBm\s+snr\s+(-?[\d.]+)\s*dB"
 )
 
 
