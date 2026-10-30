@@ -1,0 +1,474 @@
+# Cat Tracker - homebase, as ESPHome.
+#
+#   esphome run homebase/esphome/cat-base1.yaml
+#
+# This is the ESP8266 + RA-02 (SX1278) base station: a fixed, powered 433 MHz LoRa
+# receiver that reports the collars to the house. Same wiring, same air settings
+# and same six-byte frame as homebase/homebase.ino, but managed by ESPHome so the
+# entities arrive through the native API instead of hand-published MQTT discovery.
+# See homebase/README.md for the wiring table and why the pins are what they are.
+#
+# The frame decode itself lives in collar_frame.h, not here: it is byte-level code
+# worth testing, and test_collar_frame.cpp compiles the same header on the host.
+# This file only wires sensors to that state.
+
+substitutions:
+  # The board's name on the network, and its device name in Home Assistant. The
+  # house already has a `base1` publishing to MQTT from the Arduino homebase
+  # firmware (cattracker/base1/#, device "base1"), and its three
+  # "missing 10 minutes" automations fire on those entities. This board is the
+  # second base station, so it gets its own name and its own entities - two
+  # boards publishing as one base id would overwrite each other's retained state.
+  device_name: cat-base2
+  base_label: Cat Base 2
+
+  # One name per collar id, in id order. These are baked in per base station, the
+  # same way the collar id is baked in per collar - rename a cat here and in
+  # cats.json, not in the collar.
+  cat0_name: Chichi
+  cat1_name: Onanda
+  cat2_name: Chacha
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${base_label}
+  comment: "Cat Tracker base station - SX1278 (RA-02) LoRa receiver for the 433 MHz collar beacons."
+  project:
+    name: cat-tracker.homebase
+    version: "1.0"
+  includes:
+    - collar_frame.h
+  on_boot:
+    # Priority -100: everything else has been set up, so a failure there is
+    # already in the log above this line.
+    priority: -100
+    then:
+      - logger.log: "base ready - waiting for collar beacons"
+
+esp8266:
+  board: nodemcuv2
+
+# The ESP8266 has one 4 MB flash, 4 sectors of which ESPHome writes preferences
+# to. A base station never changes its state, so there is nothing to save often.
+preferences:
+  flash_write_interval: 60min
+
+logger:
+  # UART0, which is also the flash and serial-banner port - the same wire
+  # homebase/README.md's bring-up checklist uses.
+  level: INFO
+  baud_rate: 115200
+
+api:
+  reboot_timeout: 15min
+
+ota:
+  - platform: esphome
+
+wifi:
+  # Priority order. TP-Link_9E19 is where this board lives; HUAWEI stays behind it
+  # so a wrong passphrase, a rebooted router or a dead 2.4 GHz radio cannot strand
+  # the board off the network - it falls back and stays reachable for OTA instead
+  # of needing a USB cable on the roof.
+  networks:
+    - ssid: "TP-Link_9E19"
+      password: "86950930"
+    - ssid: "HUAWEI-2.4G-7Pdq"
+      password: "KqWGaq8v"
+  fast_connect: true
+  # Modem sleep off. The ESP8266 does not associate reliably with it on, and the
+  # failure looks like "the base station is on the network but mute".
+  power_save_mode: none
+  # Static address on the house's one subnet. TP-Link_9E19 hands out
+  # 192.168.100.x exactly like the HUAWEI does (its DHCP lease here was .176), so
+  # this is the same network and the Home Assistant config entry keeps working.
+  # .231 is outside the usual .100-.199 pool and nothing else answers on it; do not
+  # give a second base station this address.
+  manual_ip:
+    static_ip: 192.168.100.231
+    gateway: 192.168.100.1
+    subnet: 255.255.255.0
+    dns1: 192.168.100.1
+  ap:
+    ssid: "${device_name} fallback"
+    password: "cattracker"
+
+# The last-seen entity is a timestamp, so the board needs wall-clock time. Home
+# Assistant's own NTP is the broker's host, but pool.ntp.org is what the Arduino
+# build used and what is known to answer here.
+time:
+  - platform: sntp
+    id: net_time
+    timezone: Asia/Manila
+    servers:
+      - pool.ntp.org
+      - time.google.com
+
+# ESP8266 hardware SPI is HSPI: SCK = GPIO14 (D5), MISO = GPIO12 (D6),
+# MOSI = GPIO13 (D7). D6 and D7 are NOT in GPIO order - wiring by the D label
+# alone crosses MOSI and MISO, and a crossed pair reads 0xFF, which is exactly
+# what a dead module reads.
+spi:
+  clk_pin: GPIO14  # D5
+  mosi_pin: GPIO13 # D7
+  miso_pin: GPIO12 # D6
+
+sx127x:
+  id: lora
+  cs_pin: GPIO15   # D8  NSS, and the HSPI chip select
+  rst_pin: GPIO2   # D4  RESET (also the onboard LED - it flickers at boot, no fault)
+  dio0_pin: GPIO4  # D2  RX-done. NOT GPIO16/D0: GPIO16 has no interrupt support
+
+  modulation: LORA
+  # ---- Air settings. MUST match the collar, or nothing is ever received ----
+  frequency: 433MHz
+  bandwidth: 125_0kHz
+  spreading_factor: 9
+  coding_rate: CR_4_7
+  preamble_size: 8
+  sync_value: [0x12]
+  # The collar turns the payload CRC on (RegModemConfig1 bit 2) and does not add
+  # a checksum of its own. With this off, a corrupted frame is delivered as if it
+  # were real and can move a cat's row.
+  crc_enable: true
+  # Payload length 0 = explicit header, which is what the collar sends.
+  # Continuous RX, started at boot.
+  rx_start: true
+
+  on_packet:
+    - lambda: |-
+        const int8_t id_heard =
+            cat_roster().apply(x.data(), x.size(), rssi, snr, millis());
+        if (id_heard < 0) {
+          ESP_LOGD("collar", "dropped a %u-byte frame (rssi %.1f)", (unsigned) x.size(), rssi);
+          return;
+        }
+        ESP_LOGD("collar", "pkt id=%d rssi=%.1f snr=%.1f", id_heard, rssi, snr);
+
+# ---------------------------------------------------------------------------
+# Collar 0
+# ---------------------------------------------------------------------------
+sensor:
+  - platform: template
+    name: "${cat0_name} signal"
+    id: cat0_signal
+    unit_of_measurement: dBm
+    device_class: signal_strength
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[0];
+      return c.have ? c.rssi_smoothed : NAN;
+
+  - platform: template
+    name: "${cat1_name} signal"
+    id: cat1_signal
+    unit_of_measurement: dBm
+    device_class: signal_strength
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[1];
+      return c.have ? c.rssi_smoothed : NAN;
+
+  - platform: template
+    name: "${cat2_name} signal"
+    id: cat2_signal
+    unit_of_measurement: dBm
+    device_class: signal_strength
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[2];
+      return c.have ? c.rssi_smoothed : NAN;
+
+  # SNR is the discriminator between "far away" and "behind a wall": a weak
+  # signal that is clean is range, a strong one with bad SNR is obstruction.
+  - platform: template
+    name: "${cat0_name} SNR"
+    id: cat0_snr
+    unit_of_measurement: dB
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[0];
+      return c.have ? c.snr_last : NAN;
+
+  - platform: template
+    name: "${cat1_name} SNR"
+    id: cat1_snr
+    unit_of_measurement: dB
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[1];
+      return c.have ? c.snr_last : NAN;
+
+  - platform: template
+    name: "${cat2_name} SNR"
+    id: cat2_snr
+    unit_of_measurement: dB
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[2];
+      return c.have ? c.snr_last : NAN;
+
+  # 0xFF in the frame means "no reading" (the divider on pin 029 is unwired), and
+  # it must read as unknown rather than as a 255% battery.
+  - platform: template
+    name: "${cat0_name} battery"
+    id: cat0_battery
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[0];
+      return c.battery_known() ? (float) c.battery_pct : NAN;
+
+  - platform: template
+    name: "${cat1_name} battery"
+    id: cat1_battery
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[1];
+      return c.battery_known() ? (float) c.battery_pct : NAN;
+
+  - platform: template
+    name: "${cat2_name} battery"
+    id: cat2_battery
+    unit_of_measurement: "%"
+    device_class: battery
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      const auto &c = cat_roster().collars[2];
+      return c.battery_known() ? (float) c.battery_pct : NAN;
+
+  # Seconds since this collar was last heard, unclamped - a cat missing for an
+  # hour has to read as an hour. This is the entity an automation watches, and it
+  # is also how the last-seen timestamp below is derived.
+  - platform: template
+    name: "${cat0_name} seconds since heard"
+    id: cat0_age
+    unit_of_measurement: s
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return cat_roster().collars[0].have
+                 ? (float) cat_roster().age_s(0, millis())
+                 : NAN;
+
+  - platform: template
+    name: "${cat1_name} seconds since heard"
+    id: cat1_age
+    unit_of_measurement: s
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return cat_roster().collars[1].have
+                 ? (float) cat_roster().age_s(1, millis())
+                 : NAN;
+
+  - platform: template
+    name: "${cat2_name} seconds since heard"
+    id: cat2_age
+    unit_of_measurement: s
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return cat_roster().collars[2].have
+                 ? (float) cat_roster().age_s(2, millis())
+                 : NAN;
+
+  # Packet counters. These are diagnostics, not cat facts: `packets` climbing is
+  # how you tell a working radio from a working network, and `missed` climbing
+  # faster than `packets` is a collar at the edge of range.
+  - platform: template
+    name: "${cat0_name} packets"
+    id: cat0_packets
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().collars[0].packets;
+
+  - platform: template
+    name: "${cat1_name} packets"
+    id: cat1_packets
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().collars[1].packets;
+
+  - platform: template
+    name: "${cat2_name} packets"
+    id: cat2_packets
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().collars[2].packets;
+
+  - platform: template
+    name: "${cat0_name} missed"
+    id: cat0_missed
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().collars[0].missed;
+
+  - platform: template
+    name: "${cat1_name} missed"
+    id: cat1_missed
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().collars[1].missed;
+
+  - platform: template
+    name: "${cat2_name} missed"
+    id: cat2_missed
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().collars[2].missed;
+
+  # The base station itself. `unknown id drops` is the one to watch after a
+  # collar is re-flashed with a new id: it climbs instead of the cat appearing.
+  - platform: template
+    name: "Packets"
+    id: base_packets
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().packets;
+
+  - platform: template
+    name: "Unknown id drops"
+    id: base_unknown
+    entity_category: diagnostic
+    state_class: total_increasing
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: return (float) cat_roster().unknown;
+
+  # Which access point this board actually joined, and how loud it is. Without
+  # these, "it is on the network" and "it is on the network I think it is on" look
+  # identical from Home Assistant - and a device in a bad spot shows up as
+  # missed packets rather than as a signal problem.
+  - platform: wifi_signal
+    name: "WiFi signal"
+    id: base_wifi_signal
+    entity_category: diagnostic
+    update_interval: 60s
+
+# One stale window is 15 s - one collar ping interval plus slack - so a single
+# lost packet does not flip this off.
+# A template binary_sensor is not polled, so these are pushed from the interval
+# below rather than read by a lambda of their own.
+binary_sensor:
+  - platform: template
+    name: "${cat0_name} in range"
+    id: cat0_in_range
+    device_class: connectivity
+
+  - platform: template
+    name: "${cat1_name} in range"
+    id: cat1_in_range
+    device_class: connectivity
+
+  - platform: template
+    name: "${cat2_name} in range"
+    id: cat2_in_range
+    device_class: connectivity
+
+# The one timer on the board. Everything else polls itself; a cat going out of
+# range is not a packet, so it has no event to hang off. ESPHome drops repeated
+# states, so this costs one function call per sensor per 5 s, not five states.
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          id(cat0_in_range).publish_state(cat_roster().in_range(0, millis()));
+          id(cat1_in_range).publish_state(cat_roster().in_range(1, millis()));
+          id(cat2_in_range).publish_state(cat_roster().in_range(2, millis()));
+
+# Wall-clock time of the last packet. A float epoch cannot be a sensor here: a
+# 32-bit float holds 1.7e9 to about +/-64 s, so an epoch sensor would jitter by a
+# minute. The age in seconds is the precise number, and this turns it into a
+# timestamp HA can render.
+text_sensor:
+  - platform: template
+    name: "${cat0_name} last seen"
+    id: cat0_last_seen
+    device_class: timestamp
+    update_interval: 5s
+    lambda: |-
+      if (!cat_roster().collars[0].have) return {};
+      auto now = id(net_time).now();
+      if (!now.is_valid()) return {};
+      auto last = (time_t) (now.timestamp - (time_t) cat_roster().age_s(0, millis()));
+      return ESPTime::from_epoch_local(last).strftime("%Y-%m-%dT%H:%M:%S%z");
+
+  - platform: template
+    name: "${cat1_name} last seen"
+    id: cat1_last_seen
+    device_class: timestamp
+    update_interval: 5s
+    lambda: |-
+      if (!cat_roster().collars[1].have) return {};
+      auto now = id(net_time).now();
+      if (!now.is_valid()) return {};
+      auto last = (time_t) (now.timestamp - (time_t) cat_roster().age_s(1, millis()));
+      return ESPTime::from_epoch_local(last).strftime("%Y-%m-%dT%H:%M:%S%z");
+
+  - platform: template
+    name: "${cat2_name} last seen"
+    id: cat2_last_seen
+    device_class: timestamp
+    update_interval: 5s
+    lambda: |-
+      if (!cat_roster().collars[2].have) return {};
+      auto now = id(net_time).now();
+      if (!now.is_valid()) return {};
+      auto last = (time_t) (now.timestamp - (time_t) cat_roster().age_s(2, millis()));
+      return ESPTime::from_epoch_local(last).strftime("%Y-%m-%dT%H:%M:%S%z");
+
+  # The network this board is on, read back from the board itself. With two SSIDs
+  # configured, "which one did it pick" is the first question after any outage, and
+  # the answer should not be an inference from a DHCP lease.
+  - platform: wifi_info
+    ip_address:
+      name: "IP address"
+      entity_category: diagnostic
+    ssid:
+      name: "SSID"
+      entity_category: diagnostic
+    bssid:
+      name: "BSSID"
+      entity_category: diagnostic

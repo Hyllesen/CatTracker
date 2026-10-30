@@ -16,3 +16,7 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# ESPHome build tree, generated inside homebase/esphome/ on every compile. ~22 MB
+# of platformio artifacts, not source; `esphome compile` recreates it.
+homebase/esphome/.esphome/

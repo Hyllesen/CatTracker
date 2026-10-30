@@ -59,6 +59,11 @@
 // suggest for DIO0, which produces a board that receives nothing at all.
 const uint8_t PIN_NSS  = 15;   // D8
 const uint8_t PIN_DIO0 = 4;    // D2
+// RST on D4/GPIO2, which on a NodeMCU V3 also carries the onboard blue LED
+// (LED_BUILTIN is 2 in the nodemcuv2 variant). The SX1278 RESET pad is a
+// high-impedance input with its own pull-up, so the LED does not hold the module
+// in reset - it just lights while reset is pulsed. D1/GPIO5 is the clean
+// alternative if that matters: set this to 5 and move the one wire.
 const uint8_t PIN_RST  = 2;    // D4
 
 Module* mod = new Module(PIN_NSS, PIN_DIO0, PIN_RST);

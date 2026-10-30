@@ -83,15 +83,42 @@ number and ignore the function label.
   between reboots. Asserting DTR restarts the board and drops the phone's BLE
   connection, so a run of the monitor is not a harmless act of curiosity — it
   resets the handheld. The firmware does not need DTR, so keep it low.
-- Match **all three** firmwares on every radio change: `collar/`, `handheld_ble/` and
-  `homebase/`. See "Air settings (must match the handheld)" in `collar/README.md`. A
-  homebase built with different air settings receives nothing, and that failure is
-  indistinguishable from a dead module.
-- **The packet frame has to match too, in three places:** the collar's
-  6-byte frame, the handheld's parser and the app's decoder. See "Packet
+- Match **all four** firmwares on every radio change: `collar/`, `handheld_ble/`,
+  `homebase/homebase.ino` and `homebase/esphome/cat-base2.yaml`. See "Air settings
+  (must match the handheld)" in `collar/README.md`. A homebase built with different
+  air settings receives nothing, and that failure is indistinguishable from a dead
+  module. In the ESPHome build the settings are the `sx127x:` block, and `crc_enable:
+  true` is part of them: the collar switches the payload CRC on and sends no
+  checksum of its own, so without it a corrupted frame is delivered as a cat.
+- **The packet frame has to match too, in four places:** the collar's
+  6-byte frame, the handheld's parser, the base station's decode
+  (`homebase/esphome/collar_frame.h`) and the app's decoder. See "Packet
   format (must match the handheld)" in `collar/README.md` and
   `multi-collar.md`. The frame carries the collar id, so a mismatch does not
-  fail loudly - it merges two cats into one row, or hides one entirely.
+  fail loudly - it merges two cats into one row, or hides one entirely. The
+  base station's copy is header-only and has a host test:
+  `c++ -std=c++17 -o /tmp/t homebase/esphome/test_collar_frame.cpp && /tmp/t`.
+  Change the decode and the test together, or the only symptom is an alert that
+  fires weeks later or does not fire at all.
+- **A base station's name is its identity on the broker, so never reuse one.**
+  `cattracker/base1/#` and the `homeassistant/…/base1_*` discovery records are
+  retained, and base 1's "missing 10 minutes" automations fire on the MQTT entities
+  they created. A second board must be `base2` (as ESPHome: `esphome: name:
+  cat-base2`) or the two overwrite each other's state on the same topics and a
+  dead base still looks alive. In Home Assistant an ESPHome entity's unique id is
+  rolled from the board's MAC and the object id, **not** from the device name, so
+  renaming `esphome: name:` re-adopts the same entities and leaves their
+  `entity_id`s frozen at the old name - retarget them in the entity registry, or a
+  device called "Cat Base 2" owns `sensor.cat_base_1_…` forever.
+- **`homebase/esphome/cat-base2.yaml` exists twice, and the second copy is the one
+  that runs.** The ESPHome dashboard on `m710q` builds from its own config
+  directory, `/home/stefan/homeassistant/esphome-config/` (root-owned, mounted as
+  `/config` in the `esphome` container), and it will build a stale copy without
+  complaining. Edit the repo file, then copy `cat-base2.yaml` **and
+  `collar_frame.h`** into that directory - the header resolves next to the YAML, and
+  a missing header is a build failure, not a flash failure. A device missing from
+  the dashboard means its YAML is not in that directory, not that the board is
+  offline.
 - **Each collar is flashed with its own id** (`-DCOLLAR_ID=0|1|2`). Two
   collars with the same id are invisible as separate cats. `arduino-cli
   compile` has to run before each `upload`, because the id is baked into the
