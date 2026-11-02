@@ -74,7 +74,14 @@ id went onto which board that survives a reflashing:
 |------------|-------------------|------------------------|-----|-----------|
 | 0 | `43241A318258FA98` | `0x8258FA98` / `0x43241A31` | Chichi | |
 | 1 | `0D9C35E528ADA721` | `0x28ADA721` / `0x0D9C35E5` | Onanda | |
-| 2 | `3E31C88249ACB575` | `0x49ACB575` / `0x3E31C882` | Chacha | |
+| 2 | `E571AD86E7F4EAA1` | `0xE7F4EAA1` / `0xE571AD86` | Chacha | |
+
+The collar-2 board before it was `3E31C88249ACB575` (`0x49ACB575` /
+`0x3E31C882`). It is retired — the replacement was flashed with
+`-DCOLLAR_ID=2` over the UF2 bootloader on 2026-10-30, and the `v` dump read
+back the golden registers and `Pinging every 8.2s (id 2 of 3)`; base 2 was
+receiving it at ~8.3 s cadence within minutes. The retired serial is kept here
+so a board found in a drawer is not mistaken for the one on the cat.
 
 The USB serial number is what the operating system shows, so it is also what
 `system_profiler SPUSBDataType` prints — no serial port, no firmware, no

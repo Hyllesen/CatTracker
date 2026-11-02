@@ -7,15 +7,18 @@
 //
 // Build (ATTinyCore, ATtiny85, 1 MHz internal, BOD disabled, millis disabled):
 //
-//   arduino-cli compile --fqbn "ATTinyCore:avr:attinyx5:chip=85,clock=1internal"
+//   arduino-cli compile \
+//       --fqbn "ATTinyCore:avr:attinyx5:chip=85,clock=1internal,millis=disabled,bod=disable"
 //       --build-property "compiler.cpp.extra_flags=-DCOLLAR_ID=1 -DPING_TICKS=1"
-//       --output-dir /tmp/collar85 collar_attiny85
-//   arduino-cli upload --programmer usbasp
-//       --fqbn "ATTinyCore:avr:attinyx5:chip=85,clock=1internal" --input-dir /tmp/collar85
+//       --output-dir /tmp/collar85 at-tiny85-collar
+//   arduino-cli upload --programmer usbasp \
+//       --fqbn "ATTinyCore:avr:attinyx5:chip=85,clock=1internal,millis=disabled,bod=disable"
+//       --input-dir /tmp/collar85
 //   (each command is one line; they are wrapped here for readability)
 //
 // (Run `arduino-cli board details -b ATTinyCore:avr:attinyx5` to confirm the
-// option names; --input-dir pins the exact build so the id cannot get mixed up.)
+// option names; --input-dir pins the exact build so the id cannot get mixed
+// up. `upload` does not compile.)
 //
 // Wiring (ATtiny85 pin -> Ra-02):
 //   pin 5  PB0  -> MOSI
@@ -28,7 +31,9 @@
 //   VCC = 3.0 V from an MCP1700-3002 LDO, 100 uF low-ESR cap next to the Ra-02.
 //
 // The SPI pins are also the ISP programming pins (MOSI/MISO/SCK). That is fine
-// because NSS idles high, so the Ra-02 ignores the bus while you flash.
+// because NSS idles high, so the Ra-02 ignores the bus while you flash. It does
+// NOT make 5 V safe: ISP runs at 5 V and the SX1278 pads are 3.3 V parts, so
+// flash the bare chip with no Ra-02 attached. See README, "Build order".
 // ---------------------------------------------------------------------------
 
 #include <Arduino.h>

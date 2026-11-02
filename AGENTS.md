@@ -83,15 +83,16 @@ number and ignore the function label.
   between reboots. Asserting DTR restarts the board and drops the phone's BLE
   connection, so a run of the monitor is not a harmless act of curiosity — it
   resets the handheld. The firmware does not need DTR, so keep it low.
-- Match **all four** firmwares on every radio change: `collar/`, `handheld_ble/`,
-  `homebase/homebase.ino` and `homebase/esphome/cat-base2.yaml`. See "Air settings
+- Match **all five** firmwares on every radio change: `collar/`, `handheld_ble/`,
+  `homebase/homebase.ino`, `homebase/esphome/cat-base2.yaml` and
+  `at-tiny85-collar/`. See "Air settings
   (must match the handheld)" in `collar/README.md`. A homebase built with different
   air settings receives nothing, and that failure is indistinguishable from a dead
   module. In the ESPHome build the settings are the `sx127x:` block, and `crc_enable:
   true` is part of them: the collar switches the payload CRC on and sends no
   checksum of its own, so without it a corrupted frame is delivered as a cat.
-- **The packet frame has to match too, in four places:** the collar's
-  6-byte frame, the handheld's parser, the base station's decode
+- **The packet frame has to match too, in five places:** the collar's
+  6-byte frame, the ATtiny collar's frame (`at-tiny85-collar/`), the handheld's parser, the base station's decode
   (`homebase/esphome/collar_frame.h`) and the app's decoder. See "Packet
   format (must match the handheld)" in `collar/README.md` and
   `multi-collar.md`. The frame carries the collar id, so a mismatch does not
@@ -100,6 +101,16 @@ number and ignore the function label.
   `c++ -std=c++17 -o /tmp/t homebase/esphome/test_collar_frame.cpp && /tmp/t`.
   Change the decode and the test together, or the only symptom is an alert that
   fires weeks later or does not fire at all.
+- **The ATtiny collar pings on a watchdog sleep, not a timer, so its period and
+  phase are not exact.** `sleepFor(WDTO_1S)`/`sleepFor(WDTO_8S)` on the WDT: the
+  oscillator runs 7-10 s for a nominal 8 s, and the per-id phase step is
+  **1000 ms per id**, not `collar/collar.ino`'s `PING_PERIOD_STEP_MS` = 137 ms.
+  `COLLAR_PING_MS` in `handheld_ble/handheld_ble.ino` and `homebase/homebase.ino`
+  is sized from the ATtiny step (`8000 + (MAX_COLLARS - 1) * 1000 + 1000`), which
+  is what keeps an ATtiny at `PING_TICKS=1` inside the receive window. The ATtiny
+  has **no USB serial and no device id**, so the nRF device-id rule below does
+  not identify it: write the collar id on the board, and keep the id -> cat table
+  in `at-tiny85-collar/README.md`.
 - **A base station's name is its identity on the broker, so never reuse one.**
   `cattracker/base1/#` and the `homeassistant/…/base1_*` discovery records are
   retained, and base 1's "missing 10 minutes" automations fire on the MQTT entities

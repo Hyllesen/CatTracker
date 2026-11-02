@@ -98,8 +98,14 @@ const uint8_t ROSTER_FLAG_LOW_BATT = 0x08;
 // Must comfortably exceed one collar ping interval, or a couple of missed packets
 // trip "signal lost" while the collar is fine.
 const uint32_t STALE_MS = 15000;
-const uint32_t COLLAR_PING_MS = 8000 + (MAX_COLLARS - 1) * 137;
-const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
+// Sized from the slowest collar in the fleet. The ATtiny build
+// (at-tiny85-collar/) staggers by 1000 ms per id, not collar/collar.ino's
+// 137 ms, and its watchdog oscillator runs 7-10 s for a nominal 8 s - so id 2
+// at PING_TICKS=1 pings every ~10 s, ~13 s worst case. receive() returns on a
+// preamble, so a longer window costs nothing. Same window as
+// handheld_ble/handheld_ble.ino; keep the two in step.
+const uint32_t COLLAR_PING_MS = 8000 + (MAX_COLLARS - 1) * 1000 + 1000;
+const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;   // 11200 ms
 
 // ---- House link ----
 const char* WIFI_SSID = "HUAWEI-2.4G-7Pdq";

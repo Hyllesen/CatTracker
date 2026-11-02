@@ -130,11 +130,23 @@ const uint32_t STALE_MS = 15000;
 //
 // NOTE: these two boards are coupled - change one interval, change the other.
 //
-// Each collar pings on its own period, offset by its id (PING_PERIOD_STEP_MS
-// in collar/collar.ino), so the slowest one is id MAX_COLLARS-1 and the
-// window has to cover that, not the nominal interval.
-const uint32_t COLLAR_PING_MS = 8000 + (MAX_COLLARS - 1) * 137;
-const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;
+// Each collar pings on its own period, offset by its id, so the slowest one is
+// id MAX_COLLARS-1 and the window has to cover that, not the nominal interval.
+// The step size differs per collar build, and the window has to cover the
+// largest one in the fleet:
+//   collar/collar.ino        PING_PERIOD_STEP_MS = 137 ms per id
+//   at-tiny85-collar/        sleepFor(WDTO_1S) per id = 1000 ms per id, and its
+//                            watchdog oscillator runs 7-10 s for a nominal 8 s
+// So an ATtiny at PING_TICKS=1 with id 2 pings every ~10 s, ~13 s at the fast
+// end of the oscillator. A window under that drops a ping every time the beacon
+// lands outside it, which shows up as `missed` in tools/monitor.py - not as an
+// error, and not as a dead collar.
+//
+// 11000 covers 10 s nominal + 1 s of oscillator drift. receive() returns as soon
+// as a preamble arrives, so a longer window costs nothing in latency. STALE_MS
+// below stays above the worst case (13 s), which is why it does not need to move.
+const uint32_t COLLAR_PING_MS = 8000 + (MAX_COLLARS - 1) * 1000 + 1000;
+const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;   // 11200 ms
 
 // ---- BLE ----
 #define SERVICE_UUID "8e7a1b20-3f4d-4c8e-9a1f-2b6d5e4c3a21"
@@ -361,7 +373,7 @@ const uint32_t KEEPALIVE_MS = 2000;
 
 // The radio loop publishes once per received packet, and radio.receive()
 // blocks for RX_TIMEOUT_MS, so without help the phone would hear nothing for
-// ~8 s at a time. Android's BLE supervision timeout is ~7.2 s, so that gap
+// ~11 s at a time. Android's BLE supervision timeout is ~7.2 s, so that gap
 // can drop the link - and the app has no way to notice, because a dead
 // connection looks exactly like a quiet one.
 //
