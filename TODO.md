@@ -164,7 +164,14 @@ check after each step.
 - [ ] Build/flash commands in `outpost/README.md` with `-DNODE_ID=1`.
 
 ### 6. Phase 2 acceptance: the node agrees with the house
+- [x] **Two nodes agree on collar identity**: 29 `(id, seq)` pairs heard by both, seqs
+      identical, so the collar ids in the house are unique. Bench pass recorded in
+      `FINDINGS.md` §6.
 - [ ] Node and a house receiver side by side: same `id` and `seq`, RSSI within ±3 dB.
+      **Measured cross-node spread is −2…+5 dB, per collar** (cat 2 was +4 dB stronger
+      at node 2 while cat 0 matched), so the ±3 dB band is already broken by two boards
+      sitting side by side. The term is collar position / body absorption, not node
+      placement.
 - [ ] `transmitter/` (`-DFAKE_COLLARS=3`) exercises node and gateway indoors, no cats.
 - [ ] Systematic RSSI disagreement → find the RSSI/SNR-convention cause before
       calibrating offsets.
@@ -219,6 +226,10 @@ check after each step.
       listening to a collar while transmitting.
 - [ ] Survey positions with phone GPS into `tools/outposts.json` (lat, lon, height_m,
       rssi_offset_db, name).
+- [ ] **Per-collar offset, not only per-node.** Measured on the bench: with two boards in
+      the same room, per-collar cross-node differences were −0.2 / +0.8 / +4.0 dB. A
+      single `rssi_offset_db` per node cannot absorb that. Either calibrate a collar term
+      too, or constrain the locator so a per-node offset cannot move the zone by itself.
 - [ ] Co-location calibration on one table 20 min: `rssi_offset_db` = mean difference
       from the cross-node median.
 - [ ] Walk test with `transmitter/` at 8–12 waypoints, 2 min each, CSV logged.

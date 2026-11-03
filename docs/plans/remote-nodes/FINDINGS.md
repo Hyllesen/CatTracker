@@ -269,7 +269,41 @@ was computed as `max(seq)+1 − count`, which counted frames sent **before the l
 was armed** as losses — a healthy 10-frame run read as `MISSED PACKETS`. It now counts
 gaps inside the received range.
 
-## 6. 915 payload format (node -> house)
+## 6. Two nodes on the same collars — cross-node RSSI measured
+
+Board 1 (node 1) and board 2 (node 2) read their consoles simultaneously for 100 s.
+**29 `(collar id, seq)` pairs were heard by both nodes**, and the seqs agree exactly —
+so these are the same three physical collars, and the collar ids on the boards in the
+house are unique.
+
+| cat | seqs matched | node1 mean | node2 mean | node2 − node1 |
+|-----|--------------|-----------|-----------|---------------|
+| 0 | 9 | −92.1 | −92.2 | **−0.2 dB** |
+| 1 | 10 | −83.5 | −83.0 | **+0.8 dB** |
+| 2 | 10 | −89.1 | −85.1 | **+4.0 dB** |
+
+Overall spread **−2 … +5 dB**.
+
+**This breaks the ±3 dB acceptance band in `TODO.md` task 6**, and it says the offset is
+**per collar, not per node**. Cat 2 is 4 dB stronger at node 2 while cat 0 is the same at
+both. The boards are side by side on a bench, so the difference is not node placement —
+it is the collar's position and body absorption (the 5–10 dB directional effect the plan
+already admits is not removable by any algorithm).
+
+Consequences, stated plainly:
+
+1. A single `rssi_offset_db` **per node** (task 10's co-location calibration) will not
+   absorb a per-collar 4 dB term. The calibration needs a **collar** term as well, or the
+   locator must be built so a per-node offset cannot move the zone by itself.
+2. `argmax` over raw RSSI across nodes is unsafe at this spread. Two nodes 4 dB apart
+   reporting the same cat means the zone decision is being made from uncalibrated
+   numbers.
+3. The bench is the easy case (same room, no body between). Expect **worse** in the field.
+
+**Still open:** no listener is attached in this state (both boards are nodes), so the
+node-2 uplink has not been received by anything. A third board as `-DROLE=0` closes it.
+
+## 7. 915 payload format (node -> house)
 
 ```
 CAT<n> <seq> c<id> r<rssi>      e.g.  CAT1 2 c1 r-86
@@ -299,7 +333,7 @@ third report. Sending the full roster instead would need a longer payload (RAK31
 P2P allows up to 255 bytes, but air time grows and the roster has to be encoded
 compactly, cf. the 20-byte BLE roster cap in `multi-collar.md`).
 
-## 7. Build and flash commands
+## 8. Build and flash commands
 
 ```bash
 # 433 node (RA-02 RX + RAK TX)
@@ -326,7 +360,7 @@ Node console keys: `k` register check, `i` full 433 dump, `t` self-test transmit
 
 ---
 
-## 8. Board identity (was mislabelled once, so it is written down)
+## 9. Board identity (was mislabelled once, so it is written down)
 
 | Board | MAC | Role |
 |---|---|---|
@@ -351,7 +385,7 @@ python3 -m esptool --chip esp32c3 --port /dev/cu.usbmodemXXXX --baud 115200 read
 the C3 — `rst:0x15 USB_UART_CHIP_RESET` — and drops whatever was running). Prefer that
 when you only need to know *which* board is plugged in.
 
-## 9. Gotchas that wasted time (do not repeat)
+## 10. Gotchas that wasted time (do not repeat)
 
 - **Opening the C3 serial port with DTR asserted resets the board.** In pyserial, set
   `dtr = False` **before** `open()`; setting it after is too late. This silently wiped
