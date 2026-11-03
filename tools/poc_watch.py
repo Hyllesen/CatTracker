@@ -86,9 +86,19 @@ def main():
                     text = s.read(n).decode("utf8", "replace")
                     log.write(text)
                     log.flush()
-                    for m in re.finditer(r"\[RX\] node (\d+) seq (\d+)\s+rssi (-?\d+) dBm\s+snr (-?\d+)", text):
-                        rx.append((int(m.group(2)), int(m.group(3)), int(m.group(4))))
-                        print(f"{int(time.time()-t0):5d} s  seq {m.group(2)}  rssi {m.group(3)}  snr {m.group(4)}")
+                    # Two listener lines, same fields. The node report carries the collar
+                    # it heard ("cat 1 rssi -86"), a plain talker frame carries no cat.
+                    for m in re.finditer(
+                            r"\[RX\] node (\d+) seq (\d+)\s+(?:cat (-?\d+) rssi (-?\d+)|no collar)\s*\|\s*915 rssi (-?\d+) dBm snr (-?\d+)",
+                            text):
+                        # "no collar" leaves groups 3 and 4 unset, so they must not be
+                        # fed to int() unconditionally.
+                        seq, r, snr = int(m.group(2)), int(m.group(5)), int(m.group(6))
+                        cat = int(m.group(3)) if m.group(3) is not None else None
+                        catr = m.group(4)
+                        rx.append((seq, r, snr, cat, catr))
+                        tag = f"cat {cat} rssi {catr}" if cat is not None else "no collar"
+                        print(f"{int(time.time()-t0):5d} s  seq {seq}  {tag}  915 rssi {r} snr {snr}")
             except Exception as e:
                 print(f"[{role}] read err {e}")
         time.sleep(0.05)
@@ -96,12 +106,17 @@ def main():
     if not rx:
         print("no frames received")
         return
-    seqs = [s for s, _, _ in rx]
-    rssi = [r for _, r, _ in rx]
-    snr = [n for _, _, n in rx]
-    missed = max(seqs) + 1 - len(seqs)
+    seqs = [s for s, *_ in rx]
+    rssi = [r for _, r, *_ in rx]
+    snr = [n for _, _, n, *_ in rx]
+    cats = [c for *_, c, _ in rx if c is not None]
+    # missed counts gaps *inside* the received range: seqs received after the listener
+    # was armed. The first frames sent before arming are not losses, and counting them
+    # as one made a healthy 10-frame run read as "MISSED PACKETS".
+    missed = (max(seqs) - min(seqs) + 1) - len(set(seqs))
     print(f"\nframes {len(seqs)}  seq {min(seqs)}..{max(seqs)}  missed {missed}")
-    print(f"rssi {min(rssi)}..{max(rssi)} dBm   snr {min(snr)}..{max(snr)} dB")
+    print(f"915 hop rssi {min(rssi)}..{max(rssi)} dBm   snr {min(snr)}..{max(snr)} dB")
+    print(f"collars seen at the house: {sorted(set(cats))}  ({len(cats)} reports carried a cat)")
     print("ACCEPT" if missed == 0 else "MISSED PACKETS - check the log")
 
 

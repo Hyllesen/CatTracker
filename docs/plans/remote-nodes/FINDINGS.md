@@ -219,7 +219,40 @@ from a register read alone.
 
 ---
 
-## 5. 915 payload format (node -> house)
+## 5. End-to-end acceptance — **PASSED** (bench, 5 minutes)
+
+Board 1 = node 1 (`-DROLE=2 -DNODE_ID=1`, RA-02 + RAK), board 2 = house listener
+(`-DROLE=0`), `python3 tools/poc_watch.py 300`:
+
+```
+frames 37  seq 0..36  missed 0
+915 hop rssi -25..-23 dBm   snr 12..13 dB
+collars seen at the house: [0, 1, 2]  (37 reports carried a cat)
+ACCEPT
+```
+
+**Every field arrived bit-for-bit identical** — the node's echoed payload and the
+house's decoded line were compared per `seq`: 37 matched, 37 identical, 0 differing.
+
+```
+node   [TX] payload "CAT1 3 c2 r-90"
+house  [RX] node 1 seq 3  cat 2 rssi -90  | 915 rssi -23 dBm snr 12 dB
+```
+
+**What this does NOT prove:** the ±3 dB RSSI agreement in `TODO.md` task 6 is node-433
+vs house-433, which needs a house 433 receiver (`base3` / `cat-base2`) alongside the
+node. The node transmits the RSSI it measured, so the number arriving at the house is
+the same integer by construction — matching it proves the codec and the hop, not the
+radio calibration. Field RSSI numbers need the far end of the property; −23/−25 dBm
+is saturated near-field.
+
+**Tooling note:** `tools/poc_watch.py` had two reporting bugs found by this run. The
+`no collar` line crashed the parser (regex group unset, fed to `int()`), and `missed`
+was computed as `max(seq)+1 − count`, which counted frames sent **before the listener
+was armed** as losses — a healthy 10-frame run read as `MISSED PACKETS`. It now counts
+gaps inside the received range.
+
+## 6. 915 payload format (node -> house)
 
 ```
 CAT<n> <seq> c<id> r<rssi>      e.g.  CAT1 2 c1 r-86
@@ -249,7 +282,7 @@ third report. Sending the full roster instead would need a longer payload (RAK31
 P2P allows up to 255 bytes, but air time grows and the roster has to be encoded
 compactly, cf. the 20-byte BLE roster cap in `multi-collar.md`).
 
-## 6. Build and flash commands
+## 7. Build and flash commands
 
 ```bash
 # 433 node (RA-02 RX + RAK TX)
@@ -276,7 +309,7 @@ Node console keys: `k` register check, `i` full 433 dump, `t` self-test transmit
 
 ---
 
-## 7. Board identity (was mislabelled once, so it is written down)
+## 8. Board identity (was mislabelled once, so it is written down)
 
 | Board | MAC | Role |
 |---|---|---|
@@ -297,7 +330,7 @@ python3 -m esptool --chip esp32c3 --port /dev/cu.usbmodemXXXX --baud 115200 read
 the C3 — `rst:0x15 USB_UART_CHIP_RESET` — and drops whatever was running). Prefer that
 when you only need to know *which* board is plugged in.
 
-## 8. Gotchas that wasted time (do not repeat)
+## 9. Gotchas that wasted time (do not repeat)
 
 - **Opening the C3 serial port with DTR asserted resets the board.** In pyserial, set
   `dtr = False` **before** `open()`; setting it after is too late. This silently wiped
