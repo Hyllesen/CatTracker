@@ -269,7 +269,69 @@ was computed as `max(seq)+1 − count`, which counted frames sent **before the l
 was armed** as losses — a healthy 10-frame run read as `MISSED PACKETS`. It now counts
 gaps inside the received range.
 
-## 6. Two nodes on the same collars — cross-node RSSI measured
+## 6. Cross-node RSSI: measured packet-for-packet, the offsets are per collar
+
+Two configurations, both measured, both saying the same thing.
+
+**Two nodes** reading their consoles at once for 100 s: 29 `(collar id, seq)` pairs heard
+by both, **seqs identical** → the same three physical collars, and the collar ids on the
+boards in the house are unique. Cross-node RSSI: cat 0 −0.2 dB, cat 1 +0.8 dB, cat 2
+**+4.0 dB**, overall spread −2…+5 dB.
+
+**Node + BASE** (`ROLE=3`, board 2 as the base). The base hears the collar directly *and*
+receives the node's report, and the report carries the **collar's** seq, so the two
+measurements are matched on **the same packet**, not on a time window:
+
+```
+[433] cat 1 seq 195  rssi -88 snr 10  batt 90  aligned=9 misaligned=0
+[cmp] cat 1 seq 195  base -88  node 1 says -83  diff +5   matched=4 unmatched=0
+[RX]  node 1 seq 4  cat 1 seq 195 r-83  | 915 rssi -25 dBm snr 13 dB  ok=4 miss=0
+```
+
+| cat | base | node 1 | diff |
+|-----|------|--------|------|
+| 0 | −95 | −90 | **+5** |
+| 1 | −88…−90 | −83…−84 | **+4…+6** |
+| 2 | −79…−80 | −92 | **−12…−13** |
+
+`matched 13, unmatched 0` — the base heard every packet the node reported.
+
+**The sign flips between collars**, and that is the decisive detail. A receiver
+calibration bias on one board would shift **every** collar in the **same** direction.
+Cat 1 reads 4–6 dB stronger at the node while cat 2 reads 12–13 dB weaker, so the term
+is **geometry** — which collar is nearer to which board — not board bias. Note the base
+hears cat 2 at −79/−80, its strongest signal, while the node hears it at −92: the node
+is genuinely farther from that collar.
+
+**Consequences for the locator, stated plainly:**
+
+1. **`TODO.md` task 6's ±3 dB band is not achievable** between two boards at different
+   positions. It is only meaningful for boards at the *same* point (co-location
+   calibration, task 10), and even there the collar's own position moved the spread to
+   −2…+5 dB on the bench.
+2. **A single `rssi_offset_db` per node cannot absorb a per-collar term.** A per
+   (node, collar) offset is not obtainable in the field — you cannot calibrate against
+   a cat that walks.
+3. **Cross-node absolute RSSI comparison is the wrong quantity.** The usable signal is
+   each node's RSSI for a collar **relative to that node's own baseline for that
+   collar** — temporal, same-board, same-collar. A rise at node A and a fall at node B
+   is a position signal; comparing A's −83 to B's −92 is comparing two geometries.
+4. `argmax` over raw cross-node RSSI picks a zone from uncalibrated numbers. At this
+   spread, a 13 dB geometry term makes one node the "strongest" for reasons that have
+   nothing to do with which zone the cat is in.
+
+**Base role, for reuse:** `-DROLE=3 -DNODE_ID=<base id> -I$PWD/homebase/esphome`. Console
+adds `k` register check, `i` 433 dump, `c` roster, `v` comparison stats. `t` (self-test
+TX) is node-only — the base's own RA-02 transmit would jam its 433 RX.
+
+### Supporting measurement: two nodes, time-window match
+
+Older, weaker form of the same test (nodes read at the same time, not matched packet
+for packet): 29 `(id, seq)` pairs heard by both, seqs identical; cross-node RSSI cat 0
+−0.2 dB, cat 1 +0.8 dB, cat 2 +4.0 dB, spread −2…+5 dB. It agrees with the packet-matched
+result and is kept because the node-console method is the one that works with no base.
+
+
 
 Board 1 (node 1) and board 2 (node 2) read their consoles simultaneously for 100 s.
 **29 `(collar id, seq)` pairs were heard by both nodes**, and the seqs agree exactly —
@@ -306,21 +368,25 @@ node-2 uplink has not been received by anything. A third board as `-DROLE=0` clo
 ## 7. 915 payload format (node -> house)
 
 ```
-CAT<n> <seq> c<id> r<rssi>      e.g.  CAT1 2 c1 r-86
+CAT<n> <seq> c<id> s<collarseq> r<rssi>      e.g.  CAT1 2 c1 s195 r-83
 ```
 
 - `<n>` node id (`NODE_ID`, baked in at flash time)
 - `<seq>` increments every send, so the house can count misses
+- `s<collarseq>` is the **collar's** seq. Without it the base can match a node's RSSI to
+  a time window, never to a specific packet, so the ±3 dB test cannot be run. Node seq
+  counts reports; it says nothing about which collar packet is being described.
 - `c<id>` which collar this node last heard on 433, **-1 if nothing within 30 s**.
   A stale claim is reported as `c-1` rather than repeating an old RSSI: a relay that
   keeps asserting a cat it stopped hearing looks exactly like a cat standing still.
 - `r<rssi>` that collar's RSSI in dBm as the RA-02 reported it
 
-Both ends now print the same string, so one line each is the whole acceptance test:
+Both ends print the same string, so one line each is the whole acceptance test:
 
 ```
-node    [TX] payload "CAT1 2 c1 r-86"
-house   [RX] node 1 seq 2  cat 1 rssi -86  | 915 rssi -13 dBm snr 12 dB  ok=3 miss=0
+node    [TX] payload "CAT1 4 c1 s195 r-83"
+base    [RX] node 1 seq 4  cat 1 seq 195 r-83  | 915 rssi -25 dBm snr 13 dB  ok=4 miss=0
+base    [cmp] cat 1 seq 195  base -88  node 1 says -83  diff +5   matched=4 unmatched=0
 ```
 
 Parser (`rak_event.h`) accepts both the relay form and a plain talker frame

@@ -2,10 +2,14 @@
  * poc915.ino — prove the 915 MHz LoRa P2P hop between two ESP32-C3 + RAK3172 boards.
  * RX parse lives in rak_event.h, host-tested by test_rak_event.cpp.
  *
- * One sketch, three roles, chosen at compile time:
+ * One sketch, four roles, chosen at compile time:
  *   -DROLE=0   LISTENER  (the gateway side): continuous RX, prints every frame + RSSI/SNR
  *   -DROLE=1   TALKER    (the node side):    one report every 8 s
  *   -DROLE=2   NODE      (RA-02 433 RX + RAK 915 TX): hears collars, reports over 915
+ *   -DROLE=3   BASE      (RA-02 433 RX + RAK 915 RX): hears collars directly AND hears
+ *                the nodes' reports, and matches them packet for packet. This is the
+ *                only configuration that can measure the +/-3 dB agreement, because it
+ *                has both measurements of the SAME collar packet.
  *
  * Console is USB CDC (build with CDCOnBoot=cdc). Every print is gated on
  * Serial.isPlugged() — see AGENTS.md: a board with no cable has no Host, prints
@@ -21,6 +25,16 @@
 #define ROLE_LISTEN 0
 #define ROLE_TALK   1
 #define ROLE_NODE   2
+#define ROLE_BASE   3
+
+// Anything with an RA-02 fitted shares the same 433 driver, registers, guards and
+// console keys. The node transmits what it hears; the base reports what it hears and
+// compares it with what the nodes say they heard.
+#if ROLE == ROLE_NODE || ROLE == ROLE_BASE
+#define HAS_433 1
+#else
+#define HAS_433 0
+#endif
 
 #ifndef NODE_ID
 #define NODE_ID 1
@@ -79,7 +93,7 @@ static int logRssi[LOG_MAX];
 static int logSnr[LOG_MAX];
 static int logN = 0;
 
-#if ROLE == ROLE_NODE
+#if HAS_433
 #include "collar_frame.h"
 
 // Bit-banged SPI on the pads as wired. The C3's hardware SPI was tried on these
@@ -340,6 +354,9 @@ void poll433() {
   int8_t id = rosterNode.apply(buf, len, rssi, snr, millis());
   if (id >= 0) {
     heardId = id; heardSeq = buf[1]; heardMs = millis(); lastRssi433 = rssi;
+#if ROLE == ROLE_BASE
+    recordLocal(id, buf[1], rssi);
+#endif
     logf("[433] cat %d seq %d  rssi %d snr %d  batt %d  aligned=%d misaligned=%d  pk=%lu unk=%lu\n",
          id, buf[1], rssi, snr, buf[3], aligned, misaligned,
          (unsigned long)rosterNode.packets, (unsigned long)rosterNode.unknown);
@@ -351,6 +368,61 @@ void poll433() {
            rssi, snr, aligned, misaligned);
   }
 }
+
+#if ROLE == ROLE_BASE
+// Every collar packet this base hears, with the RSSI it measured for it. The node
+// reports the packet it heard most recently; the base hears the same packet directly.
+// Matching on (collar id, COLLAR seq) puts the two measurements of ONE ping side by
+// side. Matching on anything coarser is not a calibration: RSSI from two different
+// arrivals is not a difference between radios, it is two different packets.
+#define LOCAL_MAX 48
+#define MATCH_WIN_MS 60000UL      // a collar pings every ~8 s; covers WDT jitter and seq wrap
+static int lCat[LOCAL_MAX], lSeq[LOCAL_MAX], lRssi[LOCAL_MAX];
+static uint32_t lMs[LOCAL_MAX];
+static int lPtr = 0, lFill = 0;
+static int cmpMatch = 0, cmpUnmatched = 0;
+static long cmpSum[ct::MAX_COLLARS];
+static int cmpCnt[ct::MAX_COLLARS], cmpMin[ct::MAX_COLLARS], cmpMax[ct::MAX_COLLARS];
+
+void recordLocal(int cat, int seq, int rssi) {
+  lCat[lPtr] = cat; lSeq[lPtr] = seq; lRssi[lPtr] = rssi; lMs[lPtr] = millis();
+  lPtr = (lPtr + 1) % LOCAL_MAX;
+  if (lFill < LOCAL_MAX) lFill++;
+}
+
+void compareNode(const RakFrame &f) {
+  for (int i = 0; i < lFill; i++) {
+    if (lCat[i] == f.collar && lSeq[i] == f.collarSeq &&
+        millis() - lMs[i] < MATCH_WIN_MS) {
+      int diff = f.collarRssi - lRssi[i];
+      cmpMatch++;
+      cmpSum[f.collar] += diff;
+      if (cmpCnt[f.collar]++ == 0) { cmpMin[f.collar] = diff; cmpMax[f.collar] = diff; }
+      else { if (diff < cmpMin[f.collar]) cmpMin[f.collar] = diff;
+             if (diff > cmpMax[f.collar]) cmpMax[f.collar] = diff; }
+      logf("[cmp] cat %d seq %d  base %d  node %d says %d  diff %+d   matched=%d unmatched=%d\n",
+           f.collar, f.collarSeq, lRssi[i], f.node, f.collarRssi, diff, cmpMatch, cmpUnmatched);
+      return;
+    }
+  }
+  cmpUnmatched++;
+  // Not a failure. The node reports ONE collar, whichever it heard most recently, so
+  // any given packet is reported by some node and not others. A persistently rising
+  // unmatched count with zero matches is the signal that the two boards are hearing
+  // different collar boards, not the same cat.
+  logf("[cmp] node %d cat %d seq %d r%d — base has not heard that packet  matched=%d unmatched=%d\n",
+       f.node, f.collar, f.collarSeq, f.collarRssi, cmpMatch, cmpUnmatched);
+}
+
+void printCmp() {
+  logf("[cmp stats] matched %d  unmatched %d  local pkts %d\n", cmpMatch, cmpUnmatched, lFill);
+  for (int c = 0; c < ct::MAX_COLLARS; c++) {
+    if (!cmpCnt[c]) continue;
+    logf("[cmp] cat %d  mean %+ld dB  spread %+d..%+d  n=%d\n", c,
+         (long)(cmpSum[c] / cmpCnt[c]), cmpMin[c], cmpMax[c], cmpCnt[c]);
+  }
+}
+#endif
 
 void printRoster() {
   logf("[last pkt] %02X %02X %02X %02X %02X %02X  rssi %d snr %d  detections %d\n",
@@ -407,6 +479,9 @@ bool isStatus(const String &l) {
 void handleEvent(String e) {
   RakFrame f = parseRxp2p(e.c_str());
   if (f.ok) {
+#if ROLE == ROLE_BASE
+    if (f.collar >= 0) compareNode(f);
+#endif
     lastRssi = f.rssi; lastSnr = f.snr; lastRxMs = millis(); warnedSilent = false;
     rxCount++;
     if (f.node >= 0) {
@@ -415,8 +490,8 @@ void handleEvent(String e) {
       else lastSeq = f.seq;
       if (logN < LOG_MAX) { logMs[logN] = millis(); logSeq[logN] = f.seq; logRssi[logN] = f.rssi; logSnr[logN] = f.snr; logN++; }
       if (f.collar >= 0)
-        logf("[RX] node %d seq %ld  cat %d rssi %d  | 915 rssi %d dBm snr %d dB  ok=%lu miss=%lu\n",
-             f.node, f.seq, f.collar, f.collarRssi, f.rssi, f.snr, rxCount, rxMiss);
+        logf("[RX] node %d seq %ld  cat %d seq %d r%d  | 915 rssi %d dBm snr %d dB  ok=%lu miss=%lu\n",
+             f.node, f.seq, f.collar, f.collarSeq, f.collarRssi, f.rssi, f.snr, rxCount, rxMiss);
       else
         logf("[RX] node %d seq %ld  no collar  | 915 rssi %d dBm snr %d dB  ok=%lu miss=%lu\n",
              f.node, f.seq, f.rssi, f.snr, rxCount, rxMiss);
@@ -519,7 +594,7 @@ void bringUp() {
   if (resp.indexOf(p2pWant) < 0)
     logf("[warn] readback does not contain %s — do not trust what you typed\n", p2pWant);
 
-  if (ROLE == ROLE_LISTEN) {
+  if (ROLE == ROLE_LISTEN || ROLE == ROLE_BASE) {
     if (atCmd("AT+PRECV=65534")) log("[mod] continuous RX armed\n");
     else log("[warn] RX not armed\n");
   } else {
@@ -540,9 +615,9 @@ void sendOne() {
   // "nothing", because the stale claim looks exactly like a cat standing still.
   #define COLLAR_FRESH_MS 30000UL
   bool fresh = (heardId >= 0) && (millis() - heardMs < COLLAR_FRESH_MS);
-  snprintf(text, sizeof(text), "CAT%d %lu c%d r%d",
+  snprintf(text, sizeof(text), "CAT%d %lu c%d s%d r%d",
            NODE_ID, (unsigned long)seq,
-           fresh ? heardId : -1, fresh ? lastRssi433 : 0);
+           fresh ? heardId : -1, fresh ? heardSeq : -1, fresh ? lastRssi433 : 0);
 #else
   snprintf(text, sizeof(text), "CAT%d %lu", NODE_ID, (unsigned long)seq);
 #endif
@@ -606,14 +681,15 @@ void setup() {
   Serial1.begin(115200, SERIAL_8N1, PIN_RAK_RX, PIN_RAK_TX);
   delay(1500);
   logf("\nPOC915 ver 2  role %s  node %d\n",
-       ROLE == ROLE_LISTEN ? "LISTENER" : (ROLE == ROLE_NODE ? "NODE" : "TALKER"), NODE_ID);
+       ROLE == ROLE_LISTEN ? "LISTENER" : (ROLE == ROLE_NODE ? "NODE" :
+       (ROLE == ROLE_BASE ? "BASE" : "TALKER")), NODE_ID);
   logf("RAK on GPIO%d(RX)/GPIO%d(TX), 915 MHz SF%d BW%d CR%d preamble %d, %d dBm\n",
        PIN_RAK_RX, PIN_RAK_TX, SF, BW, CR, PREAMBLE, TX_DBM);
   log("Antenna must be on the module before it transmits. 8.2 cm radiator.\n");
 
   bringUp();                         // RAK first, on an undisturbed rail
 
-#if ROLE == ROLE_NODE
+#if HAS_433
   delay(500);                        // let the rail recover before the RA-02 draws
   logf("RA-02 on SCK=GPIO%d MISO=GPIO%d MOSI=GPIO%d NSS=GPIO%d RST=GPIO%d DIO0=GPIO%d, "
        "433 MHz SF%d BW125 CR4/7 sync %02X preamble %d. Antenna 17.3 cm.\n",
@@ -629,16 +705,25 @@ void loop() {
   while (Serial.available()) {
     char c = (char)Serial.read();
     if (c == 'h') log("\n[h] help [b] bridge [p] readback [r] re-arm RX [s] send now [x] stop RX\n");
+#if ROLE == ROLE_BASE
+    if (c == 'h') log("[v] comparison stats\n");
+#endif
     else if (c == 'b') bridge();
     else if (c == 'p') readback();
     else if (c == 'd') dump();
     else if (c == 'r') reArmRx();
     else if (c == 's') sendOne();
-#if ROLE == ROLE_NODE
+#if HAS_433
     else if (c == 'k') check433();
     else if (c == 'i') dump433();
     else if (c == 'c') printRoster();
+#endif
+#if ROLE == ROLE_NODE
+    // Self-test TX is node-only: the base's RA-02 TX would jam its own 433 RX.
     else if (c == 't') txTestFrame();
+#endif
+#if ROLE == ROLE_BASE
+    else if (c == 'v') printCmp();
 #endif
     else if (c == 'x') { atCmd("AT+PRECV=0"); log("[mod] RX stopped\n"); }
   }
@@ -647,7 +732,7 @@ void loop() {
   String l = readLine(ROLE == ROLE_LISTEN ? 200 : 20);
   if (l.length()) { if (l.startsWith("+EVT")) handleEvent(l); else logf("[mod] %s\n", l.c_str()); }
 
-#if ROLE == ROLE_NODE
+#if HAS_433
   poll433();
 #endif
 
@@ -659,13 +744,13 @@ void loop() {
   static uint32_t lastBeat = 0;
   if (millis() - lastBeat >= HEARTBEAT_MS) {
     lastBeat = millis();
-    if (ROLE == ROLE_LISTEN)
+    if (ROLE == ROLE_LISTEN || ROLE == ROLE_BASE)
       logf("[beat] rx=%lu miss=%lu last rssi %d snr %d\n", rxCount, rxMiss, lastRssi, lastSnr);
     else
       logf("[beat] tx=%lu fail=%lu seq %lu\n", txCount, txFail, (unsigned long)seq);
   }
 
-  if (ROLE == ROLE_LISTEN && lastRxMs && !warnedSilent &&
+  if ((ROLE == ROLE_LISTEN || ROLE == ROLE_BASE) && lastRxMs && !warnedSilent &&
       millis() - lastRxMs > 30000) {
     warnedSilent = true;
     log("[warn] 30 s of silence. Press r to re-arm RX, p for readback.\n");

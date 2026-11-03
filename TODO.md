@@ -167,11 +167,14 @@ check after each step.
 - [x] **Two nodes agree on collar identity**: 29 `(id, seq)` pairs heard by both, seqs
       identical, so the collar ids in the house are unique. Bench pass recorded in
       `FINDINGS.md` §6.
+- [x] **Node + BASE (`ROLE=3`) match the same collar packet**: the report carries the
+      collar's seq, so the base's own RSSI and the node's RSSI are compared on one ping,
+      not on a time window. `matched 13, unmatched 0`.
 - [ ] Node and a house receiver side by side: same `id` and `seq`, RSSI within ±3 dB.
-      **Measured cross-node spread is −2…+5 dB, per collar** (cat 2 was +4 dB stronger
-      at node 2 while cat 0 matched), so the ±3 dB band is already broken by two boards
-      sitting side by side. The term is collar position / body absorption, not node
-      placement.
+      **Measured and NOT met.** Packet-matched: cat 0 **+5**, cat 1 **+4…+6**, cat 2
+      **−12…−13 dB**. The sign flips between collars, so the term is geometry (which
+      collar is nearer to which board), not board bias. The band is only meaningful for
+      boards at the same point, and even co-located the bench spread was −2…+5 dB.
 - [ ] `transmitter/` (`-DFAKE_COLLARS=3`) exercises node and gateway indoors, no cats.
 - [ ] Systematic RSSI disagreement → find the RSSI/SNR-convention cause before
       calibrating offsets.
@@ -238,6 +241,9 @@ check after each step.
 ### 11. Locator on m710q
 - [ ] `tools/locator.py`: group by `(collar, seq)` in a 2 s window; median RSSI of the
       last ~10 per (cat, node); zone = argmax, confidence = margin over second place.
+      **Cross-node absolute RSSI is the wrong quantity at the measured spread** (13 dB
+      of geometry on one collar): compare each node's RSSI for a collar against that
+      node's own baseline for that collar, not against another node's number.
 - [ ] Treat a missing observation as evidence: likelihood the signal fell below
       sensitivity — SX1278 SF9/BW125 **−129 dBm typ** (datasheet), SF7 ~5–6 dB worse,
       measured on the bench.

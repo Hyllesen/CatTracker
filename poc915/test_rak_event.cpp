@@ -61,13 +61,25 @@ int main() {
   f = parseRxp2p(line);
   assert(f.node == 1 && f.seq == 12 && strcmp(f.text, "CAT1 12") == 0);
 
-  // ---- relay-node tail: "CAT1 137 c2 r-88" ----
+  // ---- relay-node tail with the collar's own seq: "CAT1 137 c2 s229 r-88" ----
   char hex2[128], line2[300];
-  hexEncode("CAT1 137 c2 r-88", hex2, sizeof(hex2));
+  hexEncode("CAT1 137 c2 s229 r-88", hex2, sizeof(hex2));
   snprintf(line2, sizeof(line2), "+EVT:RXP2P:-71:9:%s", hex2);
   f = parseRxp2p(line2);
   assert(f.ok && f.node == 1 && f.seq == 137);
-  assert(f.collar == 2 && f.collarRssi == -88);
+  assert(f.collar == 2 && f.collarSeq == 229 && f.collarRssi == -88);
+
+  // Collar seq wraps: 0 and 255 must survive
+  hexEncode("CAT1 137 c0 s0 r-129", hex2, sizeof(hex2));
+  snprintf(line2, sizeof(line2), "+EVT:RXP2P:-129:-10:%s", hex2);
+  f = parseRxp2p(line2);
+  assert(f.collar == 0 && f.collarSeq == 0 && f.collarRssi == -129);
+
+  // The older 4-field form (no collar seq) still parses, with collarSeq left -1
+  hexEncode("CAT1 3 c1 r-85", hex2, sizeof(hex2));
+  snprintf(line2, sizeof(line2), "+EVT:RXP2P:-80:6:%s", hex2);
+  f = parseRxp2p(line2);
+  assert(f.node == 1 && f.seq == 3 && f.collar == 1 && f.collarSeq == -1 && f.collarRssi == -85);
 
   // "nothing heard" is c-1, and must not be mistaken for a collar
   hexEncode("CAT1 4 c-1 r0", hex2, sizeof(hex2));

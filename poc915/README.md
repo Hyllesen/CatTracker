@@ -5,7 +5,7 @@ WiFi, no MQTT. This is the bench hop from `docs/plans/remote-nodes/poc-915-hop.m
 which has the wiring table, the build commands, the checks after every step, and
 the symptom table.
 
-Three roles, one sketch. **Each role is built to its own `--output-dir`** —
+Four roles, one sketch. **Each role is built to its own `--output-dir`** —
 `arduino-cli upload` sends the artifacts of the *last* build, so a stray compile can
 put the wrong role on a board with no error at all.
 
@@ -23,6 +23,13 @@ arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc" \
 arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc" \
   --build-property "compiler.cpp.extra_flags=-DROLE=2 -DNODE_ID=1 -I$PWD/homebase/esphome" \
   --output-dir /tmp/poc_node poc915
+
+# BASE: RA-02 on 433 + RAK listening on 915. ROLE=3. Hears collars directly, hears the
+# nodes' reports, and matches them on (collar id, COLLAR seq) so the same packet is
+# measured twice. Console adds `v` for the comparison stats.
+arduino-cli compile --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc" \
+  --build-property "compiler.cpp.extra_flags=-DROLE=3 -DNODE_ID=1 -I$PWD/homebase/esphome" \
+  --output-dir /tmp/poc_base poc915
 
 arduino-cli upload --port /dev/cu.usbmodemXXXX --fqbn "esp32:esp32:esp32c3:CDCOnBoot=cdc" --input-dir /tmp/poc_node
 ```

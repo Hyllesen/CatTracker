@@ -18,6 +18,7 @@ struct RakFrame {
   int node;       // -1 unless the payload matched CAT<node> <seq>
   long seq;       // -1 likewise
   int collar;     // -1 unless the payload carried "c<id>" (node's 433 hearing)
+  int collarSeq;  // -1 unless it carried "s<seq>" — the COLLAR's seq, not the node's
   int collarRssi; // 0 unless the payload carried "r<dBm>"
   char text[64];  // payload decoded to ASCII (non-printables become '.')
 };
@@ -30,7 +31,7 @@ inline int hexval(char c) {
 }
 
 inline RakFrame parseRxp2p(const char *line) {
-  RakFrame f = {false, 0, 0, -1, -1, -1, 0, ""};
+  RakFrame f = {false, 0, 0, -1, -1, -1, -1, 0, ""};
   if (strncmp(line, "+EVT:RXP2P:", 11) != 0) return f;
 
   char payload[128] = "";
@@ -51,12 +52,21 @@ inline RakFrame parseRxp2p(const char *line) {
   int n = -1;
   if (sscanf(f.text, "CAT%d %ld", &n, &s) == 2) { f.node = n; f.seq = s; }
 
-  // Optional tail from a relay node: "CAT1 137 c2 r-88". The collar id is -1 when the
-  // node has not heard that collar, so "c-1" is a legitimate value meaning "nothing".
-  // Parsed separately so a plain talker frame ("CAT1 137") is still accepted.
-  int c = -1, r = 0;
-  if (sscanf(f.text, "CAT%d %ld c%d r%d", &n, &s, &c, &r) == 4) {
-    f.node = n; f.seq = s; f.collar = c; f.collarRssi = r;
+  // Optional tail from a relay node: "CAT1 137 c2 s229 r-88". The collar id is -1 when
+  // the node has not heard that collar, so "c-1" is a legitimate value meaning
+  // "nothing". Parsed separately so a plain talker frame ("CAT1 137") is accepted too.
+  //
+  // The COLLAR's seq is the field that makes the base station's cross-check possible:
+  // the base hears the same ping directly, and can only match the node's RSSI to its
+  // own if both refer to the same packet. Node seq counts the node's reports; it says
+  // nothing about which collar packet is being described.
+  int c = -1, cs = -1, r = 0;
+  if (sscanf(f.text, "CAT%d %ld c%d s%d r%d", &n, &s, &c, &cs, &r) == 5) {
+    f.node = n; f.seq = s; f.collar = c; f.collarSeq = cs; f.collarRssi = r;
+  }
+  int c2 = -1, r2 = 0;
+  if (sscanf(f.text, "CAT%d %ld c%d r%d", &n, &s, &c2, &r2) == 4) {
+    f.node = n; f.seq = s; f.collar = c2; f.collarRssi = r2;
   }
   return f;
 }
