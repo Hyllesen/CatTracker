@@ -83,34 +83,59 @@ displayed as per-node dBm/SNR.
 - [ ] Collar decode stays in `homebase/esphome/collar_frame.h`, compiled by the node;
       its host test keeps passing.
 
-### 3. RAK3172 syntax proven on the module, not from docs
-- [ ] Paste real `AT+VER`, `AT+NWM=?`, `AT+P2P=?`, `AT+PSEND`, `AT+PRECV`,
-      `+EVT:RXP2P`, `+EVT:TXP2P` responses into `outpost/README.md`.
-- [ ] Resolve parameter encodings (BW 125 vs 0/1/2, CR 0 = 4/5, preamble, power) by
-      **reading back** the config after setting it. Record the accepted string.
-- [ ] Record `PRECV=65534` vs `65535` as measured, and the re-arm rule: re-arm after
-      every receive event, on RX timeout, and on a 60 s watchdog.
+### 3. RAK3172 syntax proven on the module, not from docs — mostly done
+- [x] Real `AT+VER`, `AT+NWM=?`, `AT+P2P=?`, `AT+PRECV=?` pasted into
+      `poc915/README.md` (module `RAK3172-9-SM-NI`, firmware `RUI_4.0.6_RAK3172-E`).
+- [x] **Bandwidth is a code, not kHz**: `AT+P2P=915000000:7:0:0:8:14` accepted,
+      `…:7:125:…` → `AT_PARAM_ERROR`. The readback is `915000000:7:0:0:8:14`.
+- [x] **`AT+PRECV` is persistent across reboot** — the module boots in continuous RX,
+      so bring-up must be `PRECV=0` → set P2P → read back → arm. Measured reply:
+      `P2P_RX_ON already, please disable P2P RX before setting. AT_BUSY_ERROR`.
+- [x] `AT+PSEND` and `+EVT:RXP2P` recorded from a real hop: `[TX] done` / `[RX] node 1
+      seq 4 rssi -13 snr 12 ok=5 miss=0`, board 1 ↔ board 2 on the bench
+      (`poc915/README.md`). **RSSI −13 dBm is saturated near-field, not a range number.**
+- [x] `AT+SN=?` returns **empty** on this module — `AT+VER` + the label string is the
+      module record. The **board** MAC is the usable identifier (`esptool read_mac`).
+- [x] **`AT+PRECV` is persistent across reboot** — recorded. `PRECV=0` is the arm
+      command on this firmware (`P2P_RX_ON` is the *state query*, not the arm). In
+      continuous RX no re-arm is needed after a receive; the 60 s watchdog re-arm is
+      still to be recorded.
 - [ ] Record that `AT+NWM=0` reboots and writes flash (query, set once), `AT+PSEND`
       needs `PRECV=0` first, and a new `AT+P2P=` during RX silently kills reception.
 - [ ] Fix the 915 table (915.000, **SF7**, BW125, **CR 0 = 4/5**, preamble 8, CRC on) as
       one table used by node, gateway **and bench base**; probe the P2P sync word
       (`AT+SYNCWORD` exists).
 
-### 4. Phase 1: prove the 915 hop (drafted in chat, not in this repo, never compiled)
+### 4. Phase 1: prove the 915 hop — **DONE on the bench**
 
 Follow `docs/plans/remote-nodes/remote-node-wiring.md` steps A and B for the bench, step by step, with the
 check after each step.
-- [ ] `node_link/node_link.ino` (C3, fake report every 8 s, `-DNODE_ID=1`), with
-      **`PIN_RAK_RX = GPIO20`, `PIN_RAK_TX = GPIO21`** and the SF7 / CR 0 settings.
-- [ ] `base_link/base_link.ino` (NodeMCU + SoftwareSerial, **WiFi off** — 115200 is
-      only reliable with WiFi off), printing decoded RSSI/SNR, the hop's own RSSI/SNR,
-      and a missed-seq counter. D1 = GPIO5 (RX), D2 = GPIO4 (TX), SF7 to match.
-- [ ] Build lines in the README: `esp32:esp32:esp32c3:CDCOnBoot=cdc`,
-      `esp8266:esp8266:nodemcuv2`.
+- [x] `poc915/` exists, compiles for **three** roles (`-DROLE=0` listener,
+      `-DROLE=1 -DNODE_ID=n` talker, `-DROLE=2 -DNODE_ID=n` node), **`PIN_RAK_RX =
+      GPIO20`, `PIN_RAK_TX = GPIO21`**, SF7/CR 0. RX parse in `poc915/rak_event.h`,
+      host-tested. **Run on hardware.** First hop: `[TX] done seq 4 ok=5` /
+      `[RX] node 1 seq 4 rssi -13 snr 12 ok=5 miss=0`. Guide:
+      `docs/plans/remote-nodes/poc-915-hop.md`; findings:
+      `docs/plans/remote-nodes/FINDINGS.md`.
+- [x] The listener is a second C3 (`-DROLE=0`); the NodeMCU bench base was never built.
+- [x] `esp32:esp32:esp32c3:CDCOnBoot=cdc`, each role pinned to its own `--output-dir`.
+- [x] 100 µF (+ 100 nF closest to the module) across 3V3-GND at each radio, antenna
+      fitted before power.
+- [x] **Node firmware exists as `ROLE=2` in `poc915`** — RA-02 on 433 (bit-bang SPI,
+      SCK 4 / MISO 5 / MOSI 6 / NSS 7 / RST 1 / DIO0 0) decoding real collars through
+      `homebase/esphome/collar_frame.h`, reporting over 915. Measured: 3 collars, RSSI
+      −85…−111 dBm, `misaligned=0`, `crc_err=0`, `[TX] done ok=6`. This is the POC's
+      shape, not the final `outpost/` firmware.
+- [ ] **End-to-end acceptance not yet run:** node report received by the house board
+      (`[RX] node 1 seq N cat <id> r<rssi>`), same `seq` and `cat` at both ends, RSSI
+      within ±3 dB. Blocked only on powering the second board.
 - [ ] Acceptance: 30 minutes, one report per 8 s, **0 missed seq** at a few metres,
       then at the longest distance expected in the field.
 - [ ] Deliberate SF mismatch recorded as a known symptom.
-- [ ] 100 µF across 3V3-GND at each radio, antenna fitted before power.
+- [ ] Replace the POC's ASCII payload (`CAT<n> <seq> c<id> r<rssi>`) with the task-2
+      binary codec. The ASCII form is provisional: it is readable on two consoles, which
+      is what made two silent firmware bugs visible, and it carries **one** collar per
+      report.
 
 ### 5. Node firmware (`outpost/outpost.ino`, ESP32-C3)
 - [ ] Pin map, as `docs/plans/remote-nodes/remote-node-wiring.md`: SX1278 SCK/MISO/MOSI/NSS on GPIO4/5/6/7

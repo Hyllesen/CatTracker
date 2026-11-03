@@ -183,4 +183,30 @@ number and ignore the function label.
   mode" and succeed on the second run.** The reset into the bootloader is a
   1200-bps touch and it is asynchronous; the first attempt can get there
   before the board has reset. The touch has already happened, so retry. It
-  is not a wiring or build problem.
+  is not a wiring or build problem.- **On a node board, bring the RAK3172 up before touching the RA-02, and re-check it
+  afterwards.** The RA-02's cold inrush (100 µF plus the module) lands on the shared
+  3V3 rail while the RAK is still in its own power-on, and a RAK that browns out mid-boot
+  comes up **mute** — silent, not reset-looping, which looks exactly like a dead module.
+  `setup()` is ordered RAK → 500 ms → `init433()` → re-check, and prints
+  `[warn] RAK stopped answering after the RA-02 was initialised` if the order ever
+  matters again. Do not reorder it, and do not diagnose a silent module as dead before
+  checking `BOOT0` (must be 0 V) and `RST` (must be 3.3 V).
+- **A register read is not proof a module is powered.** The SX1278's SPI/control inputs
+  have ESD diodes to their VDD rail, so a chip fed only by the C3's driven signal wires
+  can run **phantom-powered** on ~2.0–2.7 V: it answers SPI, reads back the values you
+  wrote, and decodes packets, while its PA is starved and packet-status registers return
+  garbage. Restore a real 3V3 feed before trusting any RSSI number.
+- **Node ids are baked at compile time and must be unique, and the port suffix
+  identifies nothing.** Two nodes reporting as the same `NODE_ID` merge into one row at
+  the house. `arduino-cli upload` sends the artifacts of the *last* build, so build each
+  role to its own `--output-dir` (`/tmp/poc_rx`, `/tmp/poc_tx`, `/tmp/poc_node`); a
+  stray compile puts the wrong role on a board with no error. Both C3 boards have
+  appeared as `/dev/cu.usbmodem111301` — identify by MAC (`esptool read_mac`, or
+  `serial.tools.list_ports`'s `serial_number`, which does not open the port and so does
+  not reset the board).
+- **Read the RA-02's packet-status registers in standby, not mid-reception.** RSSI, SNR,
+  FIFO pointers and the detection registers are live: read while receiving and you get
+  values from part-way through a packet (`rssi 83 (-304)`, `snr C1 (-63)`), which reads
+  like a very weak signal and is not a signal measurement. Config registers (FRF, MC1,
+  MC2, Sync, InvIQ, PA) are static and read clean in RX; that is why `k` is reliable and
+  `i` needs the radio stopped.

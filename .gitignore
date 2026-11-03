@@ -20,3 +20,9 @@ __pycache__/
 # ESPHome build tree, generated inside homebase/esphome/ on every compile. ~22 MB
 # of platformio artifacts, not source; `esphome compile` recreates it.
 homebase/esphome/.esphome/
+# arduino-cli writes an IDE-style build tree next to sketches that have a build.opts
+# (the Arduino IDE opens these dirs). These are compiled artifacts of the sketch, so
+# committing them grows the repo for no source. Rebuilding is one command — and each
+# role build is pinned to its own --output-dir, see poc915/README.md.
+poc915/build/
+poc915/at_probe/build/
