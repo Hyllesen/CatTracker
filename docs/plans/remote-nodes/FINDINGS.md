@@ -36,6 +36,23 @@ soldering, SPI and antenna are all good.
 
 ### Both radios working at once — the node is a working node
 
+Board 2 as node 2, the same build as node 1, verified standalone:
+
+```
+POC915 ver 2  role NODE  node 2
+[mod] AT+VER=RUI_4.0.6_RAK3172-E   readback AT+P2P=915000000:7:0:0:8:14
+[433] ver 12   frf 6C4000   mc1 76  mc2 94  sync 12  pa FF  opmode 85
+[TX] payload "CAT2 0 c-1 r0"        ← nothing heard yet, so the report says so
+[TX] payload "CAT2 1 c0 r-93"
+[TX] done  seq 1  ok=2
+[433] cat 1 seq 90 rssi -84 snr 8 batt 91  aligned=1 misaligned=0
+```
+
+Three collars, `misaligned=0`, RAK answering on the **first** probe with the reordered
+bring-up. **No listener is attached in this state** — two nodes talking with nobody
+listening is the state where a silent failure is invisible, so keep one board as the
+`-DROLE=0` listener until a third board is available.
+
 On board 1 (`80:53:e0:a0:be:30`): RA-02 hears three collars on 433 and the RAK3172
 sends a 915 report every 8 s, simultaneously. The "dead RAK3172" was a firmware
 boot-order fault, not hardware — see section 4.
@@ -313,8 +330,12 @@ Node console keys: `k` register check, `i` full 433 dump, `t` self-test transmit
 
 | Board | MAC | Role |
 |---|---|---|
-| 1 | `80:53:e0:a0:be:30` | node: RA-02 433 RX + RAK 915 TX (`NODE_ID=1`) |
-| 2 | `80:53:e0:a2:f8:50` | 915 listener, later a second node (`NODE_ID=2`) |
+| 1 | `80:53:e0:a0:be:30` | **node 1** — RA-02 433 RX + RAK 915 TX (`-DROLE=2 -DNODE_ID=1`) |
+| 2 | `80:53:e0:a2:f8:50` | **node 2** — same hardware, `-DROLE=2 -DNODE_ID=2` |
+
+Node ids are baked at compile time. **Two nodes reporting the same `NODE_ID` merge into
+one row at the house**, and the ids are not in the module, so the table above is the
+record of which board carries which id.
 
 **The `usbmodem` suffix is shuffled between reboots and is NOT a board identifier.**
 Both boards have been seen on `/dev/cu.usbmodem111301` at different times, and the
