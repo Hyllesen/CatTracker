@@ -26,3 +26,5 @@ homebase/esphome/.esphome/
 # role build is pinned to its own --output-dir, see poc915/README.md.
 poc915/build/
 poc915/at_probe/build/
+gateway/secrets.local
+gateway/build/

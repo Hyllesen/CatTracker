@@ -210,3 +210,28 @@ number and ignore the function label.
   like a very weak signal and is not a signal measurement. Config registers (FRF, MC1,
   MC2, Sync, InvIQ, PA) are static and read clean in RX; that is why `k` is reliable and
   `i` needs the radio stopped.
+- **A C3 board that scans fine and never associates needs its TX power lowered.** The
+  boards on this bench find `Stefan_Office` at -41 dBm and then sit at
+  `WL_DISCONNECTED` (status 6) forever. `WiFi.setTxPower(WIFI_POWER_8_5dBm)` after
+  `WiFi.begin()` associates in one second. It is the documented ESP32-C3 clone failure
+  (arduino-esp32 #7265, HomeSpan #907): the receive side works, the transmit side
+  never gets a frame out, so the handshake fails on the AP's side. `gateway/build.sh`
+  passes `-DTX_POWER=34`; the console `w` line prints the power with the status, so a
+  board that stops connecting can be read without a multimeter.
+- **Discovery names have to be copied into per-index storage, not returned from one
+  shared buffer.** `nameAt()` returns a static buffer, so a discovery pass that keeps
+  `cats[i] = nameAt(...)` for every i ends with every name being the last string
+  parsed. Home Assistant made 82 entities called `Cat Base 3 Node 1 Node 3 signal` —
+  the Chacha row was labelled with a node name. Use `nameList()` (fills a
+  `char[24][24]`) for discovery; `nameAt()` is fine for console printing, where the
+  name is used immediately.
+- **Read Home Assistant entity ids out of the registry, never type them.** The first
+  discovery pass generates ids with numeric suffixes when names collide
+  (`sensor.cat_base_3_node_1_node_3_signal_2`), and those ids survive removing the
+  entities one by one, because the discovery record remembers its suggested ids.
+  `tools/ha_registry.py` lists devices, entities and dashboards over the WebSocket API
+  (`config/entity_registry/list`, `lovelace/config`); `tools/cats_dashboard.py` adds a
+  base's rows to `dashboard-cats` by looking ids up from unique ids
+  (`base3_n0_cat1_signal`). Both need a **long-lived** admin token in `HA_TOKEN` —
+  a token issued before Home Assistant rotated its signing keys gets `401` on REST and
+  `auth_invalid` on the WebSocket, which is what happened to the one in `~/.zshrc`.
