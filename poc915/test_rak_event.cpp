@@ -92,6 +92,30 @@ int main() {
   snprintf(line2, sizeof(line2), "+EVT:RXP2P:-70:8:%s", hex2);
   f = parseRxp2p(line2);
   assert(f.node == 1 && f.seq == 12 && f.collar == -1);
+  // A report with no battery field says "nothing measured", which is not 0 mV and not
+  // 0 % — the base renders it as JSON null so the dashboard reads unknown.
+  assert(f.nodeBatt == -1 && f.nodeChg == -1);
+
+  // Battery and charge ride on the tail of a full report
+  hexEncode("CAT1 5 c1 s163 r-55 b3325 q1", hex2, sizeof(hex2));
+  snprintf(line2, sizeof(line2), "+EVT:RXP2P:-70:8:%s", hex2);
+  f = parseRxp2p(line2);
+  assert(f.node == 1 && f.seq == 5 && f.collar == 1 && f.collarSeq == 163);
+  assert(f.nodeBatt == 3325 && f.nodeChg == 1);
+
+  // Not charging is 0, and 0 is a value, not absence
+  hexEncode("CAT1 6 c-1 s-1 r0 b3190 q0", hex2, sizeof(hex2));
+  snprintf(line2, sizeof(line2), "+EVT:RXP2P:-70:8:%s", hex2);
+  f = parseRxp2p(line2);
+  assert(f.node == 1 && f.seq == 6 && f.collar == -1);
+  assert(f.nodeBatt == 3190 && f.nodeChg == 0);
+
+  // A heartbeat-style frame carrying only battery must not lose the tail, and the
+  // tail must not be read out of a collar id ("b"/"q" appear only as their own field)
+  hexEncode("CAT2 9 b3300", hex2, sizeof(hex2));
+  snprintf(line2, sizeof(line2), "+EVT:RXP2P:-70:8:%s", hex2);
+  f = parseRxp2p(line2);
+  assert(f.node == 2 && f.seq == 9 && f.nodeBatt == 3300 && f.nodeChg == -1);
 
   printf("all rak_event tests passed\n");
   return 0;

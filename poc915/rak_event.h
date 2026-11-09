@@ -9,6 +9,7 @@
 // Payload in the POC is ASCII text "CAT<node> <seq>", sent as AT+PSEND=<hex>.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 struct RakFrame {
@@ -20,8 +21,23 @@ struct RakFrame {
   int collar;     // -1 unless the payload carried "c<id>" (node's 433 hearing)
   int collarSeq;  // -1 unless it carried "s<seq>" — the COLLAR's seq, not the node's
   int collarRssi; // 0 unless the payload carried "r<dBm>"
+  int nodeBatt;   // mV from "b<mV>", -1 when the report carries no battery
+  int nodeChg;    // 1 = charging from "q1", 0 = not, -1 when the report does not say
   char text[64];  // payload decoded to ASCII (non-printables become '.')
 };
+
+// A tail field: "b3325" / "q1", appended after a space. Absent is -1, which the
+// gateway publishes as JSON null. A node with no battery divider fitted is not a node
+// with a flat cell, and the two are told apart only if absence has its own value.
+inline int tailInt(const char *text, char tag) {
+  for (const char *p = text; *p; p++) {
+    if (*p != tag) continue;
+    const char *v = p + 1;
+    if (*v == '-') v++;
+    if (*v >= '0' && *v <= '9') return (int)strtol(p + 1, nullptr, 10);
+  }
+  return -1;
+}
 
 inline int hexval(char c) {
   if (c >= '0' && c <= '9') return c - '0';
@@ -31,7 +47,7 @@ inline int hexval(char c) {
 }
 
 inline RakFrame parseRxp2p(const char *line) {
-  RakFrame f = {false, 0, 0, -1, -1, -1, -1, 0, ""};
+  RakFrame f = {false, 0, 0, -1, -1, -1, -1, 0, -1, -1, ""};
   if (strncmp(line, "+EVT:RXP2P:", 11) != 0) return f;
 
   char payload[128] = "";
@@ -68,6 +84,12 @@ inline RakFrame parseRxp2p(const char *line) {
   if (sscanf(f.text, "CAT%d %ld c%d r%d", &n, &s, &c2, &r2) == 4) {
     f.node = n; f.seq = s; f.collar = c2; f.collarRssi = r2;
   }
+  // Battery and charge ride on the tail of any report, with or without a collar, so
+  // they are read from the text rather than from a fixed sscanf pattern. The tail is
+  // appended by the node after every other field, so "c-1 b3325 q1" is a valid
+  // report that says "nothing heard, cell at 3325 mV, not charging".
+  f.nodeBatt = tailInt(f.text, 'b');
+  f.nodeChg = tailInt(f.text, 'q');
   return f;
 }
 

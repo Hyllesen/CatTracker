@@ -50,13 +50,25 @@ rejected there.
 
 Node role adds: `k` 433 register check, `i` 433 dump, `t` self-test TX (sends a real
 collar frame out of this board's own RA-02 — RX and TX share the antenna, so a decode
-proves SPI, settings and the decoder in one act), `c` collar roster.
+proves SPI, settings and the decoder in one act), `c` collar roster, `u` battery
+(`[batt] mV charge ADC divider`).
 
 `rak_event.h` decodes `+EVT:RXP2P:<rssi>:<snr>:<hex>` and the POC's payload text:
 
 ```
-CAT<n> <seq> c<id> r<rssi>      e.g.  CAT1 2 c1 r-86
+CAT<n> <seq> c<id> s<collarseq> r<rssi> [b<mV>] [q<0|1>]   e.g.  CAT1 12 c1 s163 r-55 b3325 q1
 ```
+
+The battery tail is **millivolts at the cell**, from the 100 kΩ/100 kΩ divider on
+`BAT_ADC` (GPIO3/A3, `BAT_DIV 2`), and the TP5000's open-drain `CHRG` on `CHRG_PIN`
+(`q1` = charging). A report with **no** tail is the node publishing absence, which the
+base renders as JSON null and Home Assistant shows as unknown — a node with no divider
+fitted must not read as a flat cell, and 0 % is the lie that reads as a dead battery.
+`battMv()` returns `-1` for a reading under 2000 mV, which is the floating-divider case
+(the collars use the same rule: a collar with no cell reads a tenth of a volt). Build
+with `-DBAT_ADC=<pin> -DBAT_DIV=2 -DCHRG_PIN=<pin>`, and leave them `-1` when nothing is
+fitted. A LiFePO4 curve is flat, so volts are what gets published and what the alarm
+fires on, never a percentage.
 
 `c-1` means **nothing heard in the last 30 s** — a relay that keeps asserting a cat it
 stopped hearing looks exactly like a cat standing still, so a stale collar is reported

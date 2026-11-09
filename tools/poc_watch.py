@@ -49,7 +49,15 @@ def open_port(p):
 
 def classify(s, secs=10):
     """Role by behaviour, not by label: 'p' prints the module readback, and only
-    the listener reports continuous RX."""
+    the listener reports continuous RX.
+
+    'v' is sent first because the gateway prints [RX] lines only when verbose is on
+    (key 'v' toggles it), and the acceptance lines are exactly those prints. Without
+    it a healthy base publishes to MQTT and prints nothing, and the watch reports
+    'no frames received' for a link that is working.
+    """
+    s.write(b"v\n")
+    time.sleep(0.2)
     s.write(b"p\n")
     t0 = time.time()
     buf = ""
@@ -88,17 +96,24 @@ def main():
                     log.flush()
                     # Two listener lines, same fields. The node report carries the collar
                     # it heard ("cat 1 rssi -86"), a plain talker frame carries no cat.
+                    # Both firmware families print the same fields, in their own units:
+                    # poc915 says "rssi -25 dBm snr 12 dB", the gateway says
+                    # "rssi -25 snr 12", and both report the collar as
+                    # "cat <id> seq <collarseq> r<rssi>". A regex pinned to the older
+                    # "cat 2 rssi -90" wording matched nothing, so a working hop read
+                    # as 'no frames received'. Match both suffixes.
                     for m in re.finditer(
-                            r"\[RX\] node (\d+) seq (\d+)\s+(?:cat (-?\d+) rssi (-?\d+)|no collar)\s*\|\s*915 rssi (-?\d+) dBm snr (-?\d+)",
+                            r"\[RX\] node (\d+) seq (\d+)\s+(?:cat (-?\d+) seq (-?\d+) r(-?\d+)|no collar)\s*\|\s*915 rssi (-?\d+)(?: dBm)? snr (-?\d+)(?: dB)?",
                             text):
-                        # "no collar" leaves groups 3 and 4 unset, so they must not be
-                        # fed to int() unconditionally.
-                        seq, r, snr = int(m.group(2)), int(m.group(5)), int(m.group(6))
+                        # "no collar" leaves groups 3, 4 and 5 unset, so they must not
+                        # be fed to int() unconditionally.
+                        node, seq, r, snr = int(m.group(1)), int(m.group(2)), int(m.group(6)), int(m.group(7))
                         cat = int(m.group(3)) if m.group(3) is not None else None
-                        catr = m.group(4)
+                        catseq = int(m.group(4)) if m.group(4) is not None else None
+                        catr = int(m.group(5)) if m.group(5) is not None else None
                         rx.append((seq, r, snr, cat, catr))
-                        tag = f"cat {cat} rssi {catr}" if cat is not None else "no collar"
-                        print(f"{int(time.time()-t0):5d} s  seq {seq}  {tag}  915 rssi {r} snr {snr}")
+                        tag = f"cat {cat} seq {catseq} r{catr}" if cat is not None else "no collar"
+                        print(f"{int(time.time()-t0):5d} s  node {node} seq {seq}  {tag}  915 rssi {r} snr {snr}")
             except Exception as e:
                 print(f"[{role}] read err {e}")
         time.sleep(0.05)

@@ -333,6 +333,11 @@ void applyReport(const RakFrame &f, long ts) {
   p.nodeSeq = f.seq;
   p.lastMs = millis();
   lastHopRssi = f.rssi; lastHopSnr = f.snr; lastRxMs = millis();
+  // The node's cell and charge line ride in the report tail. A report that omits them
+  // leaves the last known value: a node that drops the battery field for one cycle
+  // must not make the dashboard read "unknown" for a cell it measured a minute ago.
+  if (f.nodeBatt >= 0) p.row.nodeBatt = f.nodeBatt;
+  if (f.nodeChg >= 0) p.row.nodeChg = f.nodeChg;
 
   // `c-1` is the relay saying "nothing heard in the last 30 s". It is not a cat, and
   // a relay that kept repeating a stale RSSI would look exactly like a cat standing
@@ -417,7 +422,11 @@ void publishAll() {
 // nodes, which is ESP32 heap, not ESP8266), published retained, and rebuilt on every
 // MQTT connect so a broker restart re-reads them.
 void publishDiscovery() {
-  const int MAXREC = ctgw::NUM_NODES * (ctgw::NUM_COLLARS * 5 + 4) + 6;
+  // 6 node-level rows per node (in range, last seen, packets, missed, battery,
+  // charging), not 4. A cap that is short by two silently drops the last records of
+  // the last node, and the symptom is a node row that never appears in Home
+  // Assistant — the discovery pass prints "82 of 82" and looks complete.
+  const int MAXREC = ctgw::NUM_NODES * (ctgw::NUM_COLLARS * 5 + 6) + 6;
   static ctgw::Discovery *rec = nullptr;
   if (rec == nullptr) rec = (ctgw::Discovery *)malloc(MAXREC * sizeof(ctgw::Discovery));
   if (rec == nullptr) { logf("[warn] discovery heap failed, %d records not published\n", MAXREC); return; }
@@ -518,8 +527,9 @@ void handleEvent(String e) {
   applyReport(f, ts);
   if (verbose) {
     if (f.collar >= 0)
-      logf("[RX] node %d seq %ld  cat %d seq %d r%d  | 915 rssi %d snr %d\n",
-           f.node, f.seq, f.collar, f.collarSeq, f.collarRssi, f.rssi, f.snr);
+    logf("[RX] node %d seq %ld  cat %d seq %d r%d  | 915 rssi %d snr %d  cell %d chg %d\n",
+           f.node, f.seq, f.collar, f.collarSeq, f.collarRssi, f.rssi, f.snr,
+           f.nodeBatt, f.nodeChg);
     else
       logf("[RX] node %d seq %ld  no collar  | 915 rssi %d snr %d\n", f.node, f.seq, f.rssi, f.snr);
   }
@@ -840,9 +850,9 @@ void printReport() {
   // against each other.
   for (int n = (HAS_433 ? 0 : 1); n < ctgw::NUM_NODES; n++) {
     ctgw::NodeRow &r = pt[n].row;
-    logf("[n%d %s] in=%d age=%lu pk=%lu miss=%lu\n", n, nameAt(STR(NODE_NAMES), n),
+    logf("[n%d %s] in=%d age=%lu pk=%lu miss=%lu cell=%d chg=%d\n", n, nameAt(STR(NODE_NAMES), n),
          r.in ? 1 : 0, (unsigned long)r.ageS, (unsigned long)r.packets,
-         (unsigned long)r.missed);
+         (unsigned long)r.missed, r.nodeBatt, r.nodeChg);
     for (int c = 0; c < ctgw::NUM_COLLARS; c++) {
       ctgw::CatRow &cr = r.cats[c];
       if (!cr.have) continue;

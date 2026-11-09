@@ -4,6 +4,7 @@
 #   ./gateway/build.sh                 # compile to /tmp/gw_base3
 #   ./gateway/build.sh --flash         # compile and upload to the C3 on the bench
 #   ./gateway/build.sh --no433         # no RA-02 fitted: node 0 rows are not published
+  ./gateway/build.sh --bat=3 --chrg=8  # divider on GPIO3/A3, TP5000 CHRG on GPIO8
 #   ./gateway/build.sh --ip=233        # different static address
 #
 # Credentials are read from the files that already hold them and passed as build
@@ -27,6 +28,11 @@ BASE_ID=base3
 STATIC_IP_LAST=232
 CHECK=0
 HAS_433=1
+# Battery: -1 means nothing fitted, and the base then publishes JSON null, which Home
+# Assistant renders as unknown. That is the honest state, and it is not the same as 0.
+BAT_ADC=-1
+BAT_DIV=2
+CHRG_PIN=-1
 PORT=""
 FLASH=0
 
@@ -34,6 +40,8 @@ for a in "$@"; do
   case "$a" in
     --flash) FLASH=1 ;;
     --no433) HAS_433=0 ;;
+    --bat=*) BAT_ADC="${a#--bat=}" ;;
+    --chrg=*) CHRG_PIN="${a#--chrg=}" ;;
     --port=*) PORT="${a#--port=}" ;;
     --ip=*) STATIC_IP_LAST="${a#--ip=}" ;;
     --check) CHECK=1 ;;
@@ -69,6 +77,7 @@ S3=$(sed -n 's/^wifi_ssid_office: \([^ ]*\).*/\1/p' "$SECRETS" 2>/dev/null | hea
 P3=$(sed -n 's/^wifi_password_stefan_office: \([^ ]*\).*/\1/p' "$SECRETS" 2>/dev/null | head -1)
 
 FLAGS="-DBASE_ID=$BASE_ID -DSTATIC_IP_LAST=$STATIC_IP_LAST -DHAS_433=$HAS_433"
+FLAGS="$FLAGS -DBAT_ADC=$BAT_ADC -DBAT_DIV=$BAT_DIV -DCHRG_PIN=$CHRG_PIN"
 FLAGS="$FLAGS -DWIFI_SSID=\"$S1\" -DWIFI_PASS=\"$P1\""
 FLAGS="$FLAGS -DWIFI_SSID2=\"$S2\" -DWIFI_PASS2=\"$P2\""
 FLAGS="$FLAGS -I$REPO/poc915 -I$REPO/homebase/esphome"   # rak_event.h, collar_frame.h
@@ -83,7 +92,7 @@ else
   SKETCH="$REPO/gateway"
 fi
 
-echo "== building $BASE_ID (HAS_433=$HAS_433, static 192.168.100.$STATIC_IP_LAST) sketch=$SKETCH"
+echo "== building $BASE_ID (HAS_433=$HAS_433, static 192.168.100.$STATIC_IP_LAST, BAT_ADC=$BAT_ADC CHRG_PIN=$CHRG_PIN) sketch=$SKETCH"
 echo "   networks: $S1, $S2, ${S3:-<none>}"
 
 # Run the JSON test first (the gateway build; the probe has no JSON). A truncated discovery record publishes, Home Assistant

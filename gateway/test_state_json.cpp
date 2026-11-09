@@ -145,6 +145,26 @@ int main() {
   check(strstr(buf, "\"snr\":null") != nullptr, "an unmeasured SNR publishes as JSON null, not 0");
   check(strstr(buf, "\"last\":1762434478") != nullptr, "per-cat last publishes as epoch");
 
+  // Node battery: a node that has never reported its cell publishes null, and the
+  // template must guard the division of null. A node with no divider fitted must not
+  // read as a flat cell, so absence has its own value.
+  check(strstr(buf, "\"nb\":null") != nullptr, "a node with no battery reading publishes null");
+  check(strstr(buf, "\"nq\":null") != nullptr, "a node with no charge line publishes null");
+  check(nodeTemplate(t, sizeof(t), "battery") > 0 &&
+        strstr(t, "value_json.nb") && strstr(t, "is not none"),
+        "the node battery template guards null");
+  check(nodeTemplate(t, sizeof(t), "charging") > 0 &&
+        strstr(t, "value_json.nq") && strstr(t, "is not none"),
+        "the node charging template guards null");
+  NodeRow live;
+  live.have = true; live.in = true; live.nodeBatt = 3325; live.nodeChg = 1;
+  live.cats[0] = CatRow{true, -901, 20, true, 88, 11, 40, 1, true, 1762434478};
+  char lbuf[384];
+  int ln = buildNodeState(lbuf, sizeof(lbuf), 1762434501, live);
+  check(ln > 0 && jsonBalanced(lbuf), "node state with a battery is balanced JSON");
+  check(strstr(lbuf, "\"nb\":3325") != nullptr, "node cell publishes as millivolts");
+  check(strstr(lbuf, "\"nq\":1") != nullptr, "charge state publishes as 1");
+
   // Overflow must drop the record. A truncated snapshot published to a retained
   // topic is a dashboard that renders nothing and a broker that keeps the wreckage.
   // Probe at exactly the boundary: one byte short of the real length must be refused,
@@ -179,10 +199,10 @@ int main() {
   check(strstr(obs, "\"s\":10") != nullptr, "obs keeps raw dB, not x2");
 
   // ---------------------------------------------------------------- discovery
-  Discovery rec[NUM_NODES * (NUM_COLLARS * 5 + 4) + 6];
+  Discovery rec[NUM_NODES * (NUM_COLLARS * 5 + 6) + 6];
   int nrec = buildAllDiscovery(rec, sizeof(rec) / sizeof(rec[0]), "base3", catName,
                                nodeName, avail, true);
-  check(nrec == NUM_NODES * (NUM_COLLARS * 5 + 4) + 6,
+  check(nrec == NUM_NODES * (NUM_COLLARS * 5 + 6) + 6,
         "every discovery record is built (nodes x cats x 5 fields + node rows + base rows)");
 
   bool allOk = true, uniqueOk = true, uidOk = true;
@@ -216,23 +236,33 @@ int main() {
   // names are the entity ids. node 0 must land on the base device, not on a
   // "Node 0" device, or the dashboard has a phantom station.
   bool node0Base = false, node1Base = false, baseRows = false;
+  bool nodeBattery = false, nodeCharging = false;
   for (int i = 0; i < nrec; i++) {
     if (strstr(rec[i].json, "\"unique_id\":\"base3_n0_cat0_signal\"") &&
         strstr(rec[i].json, "\"name\":\"Cat Base 3\"")) node0Base = true;
     if (strstr(rec[i].json, "\"unique_id\":\"base3_n1_cat0_signal\"") &&
         strstr(rec[i].json, "\"name\":\"Cat Base 3 Node 1\"")) node1Base = true;
     if (strstr(rec[i].topic, "homeassistant/sensor/base3_packets/config")) baseRows = true;
+    if (strstr(rec[i].topic, "homeassistant/sensor/base3_n1_battery/config") &&
+        strstr(rec[i].json, "\"device_class\":\"voltage\"") &&
+        strstr(rec[i].json, "\"unit_of_measurement\":\"V\"")) nodeBattery = true;
+    if (strstr(rec[i].topic, "homeassistant/binary_sensor/base3_n1_charging/config") &&
+        strstr(rec[i].json, "\"device_class\":\"battery_charging\""))
+      nodeCharging = true;
   }
   check(node0Base, "the house's own 433 receiver is node 0 on the base device");
   check(node1Base, "relay node 1 is its own device");
   check(baseRows, "base-level packets record exists");
+  check(nodeBattery, "the node cell is a voltage sensor, not a fake percentage");
+  check(nodeCharging, "the node's TP5000 charge line has a binary sensor, and "
+                      "battery_charging is the class HA accepts");
 
   // A cat slot with no name publishes nothing, and the rest of the set must still be
   // complete: a renamed cat must not delete the other cats' rows.
   const char *named[NUM_COLLARS] = {"Chichi", "", "Chacha"};
   int nrec2 = buildAllDiscovery(rec, sizeof(rec) / sizeof(rec[0]), "base3", named,
                                nodeName, avail, true);
-  check(nrec2 == (NUM_NODES * (2 * 5 + 4) + 6),
+  check(nrec2 == (NUM_NODES * (2 * 5 + 6) + 6),
         "a cat with no name drops only its own rows");
 
   // A gateway with no RA-02 has no node 0. Publishing a node-0 row that is
@@ -240,7 +270,7 @@ int main() {
   // exact thing the node rows exist to distinguish.
   int nrec3 = buildAllDiscovery(rec, sizeof(rec) / sizeof(rec[0]), "base3", catName,
                                nodeName, avail, false);
-  check(nrec3 == (NUM_NODES - 1) * (NUM_COLLARS * 5 + 4) + 6,
+  check(nrec3 == (NUM_NODES - 1) * (NUM_COLLARS * 5 + 6) + 6,
         "without the 433 radio, node 0 rows are not published");
   bool noNode0 = true;
   for (int i = 0; i < nrec3; i++)

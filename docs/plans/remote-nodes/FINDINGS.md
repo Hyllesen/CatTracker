@@ -269,6 +269,47 @@ was computed as `max(seq)+1 − count`, which counted frames sent **before the l
 was armed** as losses — a healthy 10-frame run read as `MISSED PACKETS`. It now counts
 gaps inside the received range.
 
+## 5b. Re-run on 7 Nov — node 1 → base3. The console was the fault, not the radio
+
+Node 1 (`80:53:e0:a0:be:30`) was written off on 6 Nov evening as "the RAK3172 never
+answers AT — 24 probes over 40 s". Re-checked on the bench: **the module is fine.** The
+board was running a stale binary, `gateway/wifi_check`, which never touches UART2, so
+nothing was probing it. The boot banner names what is flashed: opening the port with DTR
+low resets the C3 and prints it, and the banner said `WIFI_CHECK`, not
+`POC915 ver 2 role NODE node 1`.
+
+Reflashed `-DROLE=2 -DNODE_ID=1` from `/tmp/poc_node` and the module answered on the
+**first** probe, acknowledged every send (`tx=22 fail=0`), and the RA-02 decoded all
+three collars. `python3 tools/poc_watch.py 120` against base3:
+
+```
+frames 15  seq 0..14  missed 0
+915 hop rssi -21..-16 dBm   snr 12..13 dB
+collars seen at the house: [0, 1, 2]  (15 reports carried a cat)
+ACCEPT
+```
+
+base3 also hears the collars directly on 433, and its RSSI for the **same** packet — the
+report carries the collar's own `seq`, so the match is packet-for-packet, not a time
+window — is inside ±3 dB of the node's number: 12 matched packets, diffs
+`3 3 2 0 1 0 0 -3 1 2 3 2`, mean **+1.2 dB**, spread **−3..+3**. That is `TODO.md` task 6
+measured against the base that goes into the house, and it is the first time the ±3 dB
+criterion has been met outside `ROLE=3` on the bench.
+
+**Three observer bugs, each of which reads exactly like a dead module:**
+
+1. **base3 prints `[RX] node …` only when verbose is on**, and key `v` toggles it.
+   Watching it without a key prints nothing while the board publishes normally: during a
+   120 s capture that printed zero `[RX]` lines, `sensor.cat_base_3_node_1_node_3_packets`
+   climbed from 12 to 31 and `last_seen` advanced every 8 s. `poc_watch.py` now sends `v`
+   before `p`.
+2. **`poc_watch.py`'s regex was stale** — it matched `cat 2 rssi -90`, and both firmware
+   families print `cat <id> seq <collarseq> r<rssi>`, base3 without the `dBm`/`dB`
+   suffixes. A working hop reported `no frames received`. The regex now matches both
+   spellings.
+3. **A stale binary is indistinguishable from a dead radio.** Read the boot banner before
+   reaching for the multimeter.
+
 ## 6. Cross-node RSSI: measured packet-for-packet, the offsets are per collar
 
 Two configurations, both measured, both saying the same thing.

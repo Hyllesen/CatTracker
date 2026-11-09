@@ -14,6 +14,8 @@ not the id in the registry.
     python3 tools/cats_dashboard.py --base base3                  # print, no write
     python3 tools/cats_dashboard.py --base base3 --write          # save
     python3 tools/cats_dashboard.py --base base3 --node 1 --write  # also add relay-node rows
+    python3 tools/cats_dashboard.py --base base3 --node 1 2 3 --add-tiles --write
+        # add tiles the existing node rows are missing, in the section that has them
 
 `HA_TOKEN` must be a long-lived token (admin), because `lovelace/config/save` is.
 """
@@ -62,6 +64,10 @@ NODE_TILES = [
     ("missed", "missed", "mdi:alert"),
     ("in_range", "node heard", "mdi:access-point"),
     ("last_seen", "last heard", "mdi:clock-outline"),
+    # The node's own cell. Volts, not a percentage: a LiFePO4 curve is flat, so the
+    # percentage is a guess and the voltage is what the alarm fires on.
+    ("battery", "cell V", "mdi:battery"),
+    ("charging", "charging", "mdi:lightning-bolt"),
 ]
 
 
@@ -89,6 +95,42 @@ def status_section(base, mapping, nodes):
     return {"type": "grid", "cards": cards}
 
 
+def add_node_tiles(sections, mapping, base, nodes):
+    """Append tiles a node row is missing, in the section that already has its rows.
+
+    Running the tool again appends a whole new section, so the honest way to add the
+    cell/charge tiles to a node that is already on the dashboard is to find the section
+    that contains that node's `packets` tile and append the missing tiles there. A tile
+    whose entity does not exist in the registry is skipped, not added as a blank.
+    """
+    added = 0
+    for n in nodes:
+        pk = mapping.get(f"{base}_n{n}_packets")
+        target = None
+        for s in sections:
+            for c in s.get("cards", []):
+                if c.get("type") == "tile" and c.get("entity") == pk:
+                    target = s
+                    break
+            if target:
+                break
+        if target is None:
+            print(f"[skip] no dashboard rows for node {n}")
+            continue
+        have = {c.get("entity") for c in target.get("cards", []) if c.get("type") == "tile"}
+        for field, label, icon in NODE_TILES:
+            eid = mapping.get(f"{base}_n{n}_{field}")
+            if eid is None:
+                print(f"  [skip] no entity for {base}_n{n}_{field}", file=sys.stderr)
+                continue
+            if eid not in have:
+                target["cards"].append({"type": "tile", "entity": eid,
+                                        "name": label, "icon": icon})
+                print(f"node {n}: added {field} -> {eid}")
+                added += 1
+    return added
+
+
 async def main():
     base = sys.argv[sys.argv.index("--base") + 1]
     label = sys.argv[sys.argv.index("--label") + 1] if "--label" in sys.argv else "gateway"
@@ -108,6 +150,15 @@ async def main():
     cfg = await ha.call("lovelace/config", url_path=DASH)
     view = cfg["views"][0]
     sections = view["sections"]
+
+    if "--add-tiles" in sys.argv:
+        n = add_node_tiles(sections, mapping, base, nodes)
+        print(f"{n} node tiles added to {DASH}" if n else "node rows already complete")
+        if write and n:
+            await ha.call("lovelace/config/save", url_path=DASH, config=cfg)
+            print("saved")
+        await ha.close()
+        return
 
     # A section is identified by its first heading text, so re-running does not add
     # the same base twice.

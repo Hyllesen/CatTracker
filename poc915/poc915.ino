@@ -67,6 +67,24 @@
 #define TALK_MS    8000
 #define HEARTBEAT_MS 60000
 
+// Battery monitor. Per the wiring plan the divider is 100 kΩ/100 kΩ on GPIO3 (A3), so
+// BAT_DIV is 2, and the TP5000's CHRG is open-drain and reads LOW while charging.
+// Compiling them as -1 means "nothing fitted", and the node then reports **absence**
+// rather than 0: a flat cell and a missing divider have to look different, because the
+// node is 5 m up a tree and you cannot tell them apart from the ground with a
+// multimeter. The LiFePO4 bottom is ~3.0 V, so a reading under 2000 mV is treated as
+// no cell — the same rule the collars use, where a collar with no cell reads a tenth
+// of a volt at the divider pad.
+#ifndef BAT_ADC
+#define BAT_ADC -1
+#endif
+#ifndef BAT_DIV
+#define BAT_DIV 2
+#endif
+#ifndef CHRG_PIN
+#define CHRG_PIN -1
+#endif
+
 #include "rak_event.h"
 
 static char p2pSet[64];      // "AT+P2P=915000000:7:125:0:8:14"
@@ -453,6 +471,28 @@ void logf(const char *fmt, ...) {
 
 void log(const char *s) { if (host()) Serial.print(s); }
 
+// mV at the cell, not a percentage. A LiFePO4 discharge curve is flat between ~10 %
+// and ~90 %, so a percentage read off the voltage is a number the dashboard will
+// believe. Volts are a fact, and the alarm has to be on the volts.
+int battMv() {
+#if BAT_ADC >= 0
+  uint32_t raw = 0;
+  for (int i = 0; i < 8; i++) raw += analogRead(BAT_ADC);
+  int mv = (int)((raw / 8.0f) * 3.3f / 4095.0f * BAT_DIV * 1000.0f);
+  return mv < 2000 ? -1 : mv;
+#else
+  return -1;
+#endif
+}
+
+int chgState() {
+#if CHRG_PIN >= 0
+  return digitalRead(CHRG_PIN) == LOW ? 1 : 0;
+#else
+  return -1;
+#endif
+}
+
 // ---------------------------------------------------------------- module I/O
 
 void poke() { Serial1.print("\r\n"); }
@@ -600,13 +640,13 @@ void bringUp() {
   } else {
     logf("[mod] talker, node %d, every %d ms\n", NODE_ID, TALK_MS);
   }
-  log("\n[h] help [b] bridge [p] readback [d] dump walk log [r] re-arm RX [s] send now [x] stop RX\n");
+  log("\n[h] help [b] bridge [p] readback [d] dump walk log [r] re-arm RX [s] send now [x] stop RX [u] battery\n");
 }
 
 // ---------------------------------------------------------------- actions
 
 void sendOne() {
-  char text[40];
+  char text[48];
 #if ROLE == ROLE_NODE
   // The listener parses the CAT<node> <seq> prefix, so seq counting keeps working,
   // and the tail says what this node heard on 433. A collar heard more than
@@ -615,9 +655,20 @@ void sendOne() {
   // "nothing", because the stale claim looks exactly like a cat standing still.
   #define COLLAR_FRESH_MS 30000UL
   bool fresh = (heardId >= 0) && (millis() - heardMs < COLLAR_FRESH_MS);
-  snprintf(text, sizeof(text), "CAT%d %lu c%d s%d r%d",
+  // Battery and charge are appended only when fitted and read: " b3325 q1". A report
+  // that omits them is the node publishing absence, and the base renders that as JSON
+  // null, not 0.
+  char tail[20] = "";
+  int mv = battMv(), chg = chgState();
+  if (mv >= 0) snprintf(tail, sizeof(tail), " b%d", mv);
+  if (chg >= 0) {
+    char t2[8];
+    snprintf(t2, sizeof(t2), " q%d", chg);
+    strncat(tail, t2, sizeof(tail) - strlen(tail) - 1);
+  }
+  snprintf(text, sizeof(text), "CAT%d %lu c%d s%d r%d%s",
            NODE_ID, (unsigned long)seq,
-           fresh ? heardId : -1, fresh ? heardSeq : -1, fresh ? lastRssi433 : 0);
+           fresh ? heardId : -1, fresh ? heardSeq : -1, fresh ? lastRssi433 : 0, tail);
 #else
   snprintf(text, sizeof(text), "CAT%d %lu", NODE_ID, (unsigned long)seq);
 #endif
@@ -679,6 +730,12 @@ void setup() {
   Serial.begin(115200);              // USB CDC console
   Serial.setTxTimeoutMs(0);          // a Host that stops reading cannot stall loop()
   Serial1.begin(115200, SERIAL_8N1, PIN_RAK_RX, PIN_RAK_TX);
+#if BAT_ADC >= 0
+  pinMode(BAT_ADC, INPUT);
+#endif
+#if CHRG_PIN >= 0
+  pinMode(CHRG_PIN, INPUT_PULLUP);
+#endif
   delay(1500);
   logf("\nPOC915 ver 2  role %s  node %d\n",
        ROLE == ROLE_LISTEN ? "LISTENER" : (ROLE == ROLE_NODE ? "NODE" :
@@ -721,6 +778,8 @@ void loop() {
 #if ROLE == ROLE_NODE
     // Self-test TX is node-only: the base's RA-02 TX would jam its own 433 RX.
     else if (c == 't') txTestFrame();
+    else if (c == 'u') logf("[batt] %d mV  charge %d  ADC %d div %d\n",
+                            battMv(), chgState(), BAT_ADC, BAT_DIV);
 #endif
 #if ROLE == ROLE_BASE
     else if (c == 'v') printCmp();
@@ -747,7 +806,8 @@ void loop() {
     if (ROLE == ROLE_LISTEN || ROLE == ROLE_BASE)
       logf("[beat] rx=%lu miss=%lu last rssi %d snr %d\n", rxCount, rxMiss, lastRssi, lastSnr);
     else
-      logf("[beat] tx=%lu fail=%lu seq %lu\n", txCount, txFail, (unsigned long)seq);
+      logf("[beat] tx=%lu fail=%lu seq %lu batt %d chg %d\n", txCount, txFail,
+           (unsigned long)seq, battMv(), chgState());
   }
 
   if ((ROLE == ROLE_LISTEN || ROLE == ROLE_BASE) && lastRxMs && !warnedSilent &&

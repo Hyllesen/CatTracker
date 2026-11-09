@@ -74,6 +74,12 @@ struct NodeRow {
   long last = 0;
   uint32_t packets = 0;  // reports from this node
   uint32_t missed = 0;   // seq gaps inside this node's reports
+  // The node's own cell, in mV, from the report tail `b<mV>`, and the TP5000 charge
+  // line from `q<0|1>`. -1 means the node has never reported it, which publishes as
+  // JSON null and renders as unknown — not the 0 % a flat cell would look like. The
+  // node is up a tree, so "no divider fitted" and "cell flat" must not share a value.
+  int nodeBatt = -1;
+  int nodeChg = -1;
   CatRow cats[NUM_COLLARS];
 };
 
@@ -134,6 +140,14 @@ inline int buildNodeState(char *buf, size_t cap, long ts, const NodeRow &r) {
              "{\"ts\":%ld,\"pk\":%lu,\"miss\":%lu,\"in\":%d,\"age\":%lu,\"last\":%ld",
              ts, (unsigned long)r.packets, (unsigned long)r.missed, r.in ? 1 : 0,
              (unsigned long)r.ageS, r.last);
+  // Node-level battery and charge, published as null when never reported. Built in
+  // local buffers for the same reason `snrTxt` is: a temporary died at the end of the
+  // expression is exactly where the append happens.
+  char nbBuf[16], nqBuf[16];
+  const char *nbTxt = "null", *nqTxt = "null";
+  if (r.nodeBatt >= 0) { snprintf(nbBuf, sizeof(nbBuf), "%d", r.nodeBatt); nbTxt = nbBuf; }
+  if (r.nodeChg >= 0) { snprintf(nqBuf, sizeof(nqBuf), "%d", r.nodeChg); nqTxt = nqBuf; }
+  CTGW_APPEND(buf, cap, n, ",\"nb\":%s,\"nq\":%s", nbTxt, nqTxt);
   for (int i = 0; i < NUM_COLLARS; i++) {
     const CatRow &c = r.cats[i];
     // `snr` is emitted as JSON null when this point never measured it, so Home
@@ -228,6 +242,14 @@ inline int nodeTemplate(char *out, size_t cap, const char *field) {
     n = snprintf(out, cap, "{{ value_json.pk }}");
   } else if (strcmp(field, "missed") == 0) {
     n = snprintf(out, cap, "{{ value_json.miss }}");
+  } else if (strcmp(field, "battery") == 0) {
+    // mV in the record, V in Home Assistant. Dividing null is a template error, so the
+    // guard is in the template.
+    n = snprintf(out, cap,
+                 "{{ (value_json.nb / 1000) if value_json.nb is not none else none }}");
+  } else if (strcmp(field, "charging") == 0) {
+    n = snprintf(out, cap,
+                 "{{ ('ON' if value_json.nq == 1 else 'OFF') if value_json.nq is not none else none }}");
   } else {
     return 0;
   }
@@ -344,20 +366,28 @@ inline int buildAllDiscovery(Discovery *out, size_t cap, const char *base,
 
     // The node's own row: Blind vs Missing. A node that stops reporting is the
     // plumbing failing, not the cat walking away, and the alert has to say which.
-    const char *nodeFields[4] = {"in range", "last seen", "packets", "missed"};
-    const char *nodeUid[4] = {"in_range", "last_seen", "packets", "missed"};
-    for (int f = 0; f < 4; f++) {
+    const char *nodeFields[6] = {"in range", "last seen", "packets", "missed",
+                                 "battery", "charging"};
+    const char *nodeUid[6] = {"in_range", "last_seen", "packets", "missed",
+                              "battery", "charging"};
+    const char *nodeUnits[6] = {nullptr, nullptr, nullptr, nullptr, "V", nullptr};
+    const char *nodeClasses[6] = {"connectivity", "timestamp", nullptr, nullptr,
+                                  "voltage", "battery_charging"};
+    for (int f = 0; f < 6; f++) {
       if (nodeTemplate(tmpl, sizeof(tmpl), nodeFields[f]) == 0) return nrec;
       char uid[64], entName[48];
       snprintf(uid, sizeof(uid), "%s_n%d_%s", base, node, nodeUid[f]);
       snprintf(entName, sizeof(entName), "%s %s", nodeName[node], nodeFields[f]);
       if (out == nullptr || nrec >= (int)cap) return nrec;
+      // `in range` and `charging` are binary sensors; the battery is a voltage sensor,
+      // not a `battery` device_class, because a LiFePO4 discharge curve is flat and a
+      // percentage read off it is a lie the dashboard will believe. Volts are a fact.
+      bool bin = (f == 0 || f == 5);
       if (discoveryTopic(out[nrec].topic, sizeof(out[nrec].topic),
-                         f == 0 ? "binary_sensor" : "sensor", uid) == 0) return nrec;
-      const char *cls = f == 0 ? "connectivity" : (f == 1 ? "timestamp" : nullptr);
+                         bin ? "binary_sensor" : "sensor", uid) == 0) return nrec;
       if (buildSensorConfig(out[nrec].json, sizeof(out[nrec].json), stateTopic,
                             availTopic, uid, entName, devIdent, devName,
-                            nullptr, cls, tmpl, f == 0) == 0) return nrec;
+                            nodeUnits[f], nodeClasses[f], tmpl, bin) == 0) return nrec;
       nrec++;
     }
   }
@@ -369,6 +399,11 @@ inline int buildAllDiscovery(Discovery *out, size_t cap, const char *base,
                             "wifi_signal", "ip_address"};
   const char *baseUnits[6] = {nullptr, nullptr, "%", nullptr, "dB", nullptr};
   const char *baseClasses[6] = {nullptr, nullptr, "battery", nullptr, nullptr, nullptr};
+  // TP5000 CHRG at base level is published with **no** device_class. HA's binary_sensor
+  // class is `battery_charging`, not `charging`, and a record with the invalid one is
+  // dropped inside the MQTT entity code: the discovery count prints "90 of 90 built",
+  // the broker holds the record, and the only symptom is an entity that never appears.
+  // The error is only in the HA log.
   for (int f = 0; f < 6; f++) {
     if (baseTemplate(tmpl, sizeof(tmpl), baseFields[f]) == 0) return nrec;
     char uid[64], entName[48], baseState[64];

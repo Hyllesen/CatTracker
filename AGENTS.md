@@ -235,3 +235,19 @@ number and ignore the function label.
   (`base3_n0_cat1_signal`). Both need a **long-lived** admin token in `HA_TOKEN` —
   a token issued before Home Assistant rotated its signing keys gets `401` on REST and
   `auth_invalid` on the WebSocket, which is what happened to the one in `~/.zshrc`.
+- **A solar node publishes volts, not a percentage, and absence has its own value.**
+  A LiFePO4 curve is flat between ~10 % and ~90 %, so a percentage read off the voltage
+  is a number the dashboard will believe; the alarm is on volts, and `node_check.py`
+  warns below 3.10 V. `BAT_ADC`/`BAT_DIV`/`CHRG_PIN` compiled as `-1` mean "nothing
+  fitted", and the node then omits the report tail `b<mV> q<0|1>`, which the base
+  renders as JSON null — a node with no divider fitted must not read as a flat cell.
+  The tail is parsed by `poc915/rak_event.h`'s `tailInt` (tested in
+  `poc915/test_rak_event.cpp`) and published as `nb`/`nq` by `gateway/state_json.h`
+  (tested in `gateway/test_state_json.cpp`). Change the format in **all four**.
+- **HA's binary_sensor device class is `battery_charging`; `charging` is rejected, and
+  the rejection is invisible from the device.** The discovery count prints
+  `90 of 90 records built`, the broker holds the record, and the only symptom is an
+  entity that never appears. The error is in HA's log:
+  `echo ughugh | sudo -S docker exec homeassistant cat /config/home-assistant.log` on
+  `m710q`. The same silent drop happens when `MAXREC` is short: count the discovery
+  records for **every** field, not for the fields you added last.
