@@ -26,10 +26,16 @@ function rosterBytes(entries: Array<{
   snr?: number;
   age?: number;
   battery?: number;
+  findRequested?: boolean;
+  findActive?: boolean;
 }>): number[] {
   const out = [0x10, entries.length];
   entries.forEach(e => {
-    const flags = (e.have ? 0x01 : 0x00) | (e.fresh ? 0x02 : 0x00);
+    const flags =
+      (e.have ? 0x01 : 0x00) |
+      (e.fresh ? 0x02 : 0x00) |
+      (e.findRequested ? 0x10 : 0x00) |
+      (e.findActive ? 0x20 : 0x00);
     const rssi = Math.round((e.rssi ?? -100) * 10);
     const snr = Math.round((e.snr ?? 10) * 2);
     out.push(
@@ -64,6 +70,9 @@ jest.mock('react-native-ble-plx', () => {
     discoverAllServicesAndCharacteristics: jest.fn(async () => undefined),
     requestMTU: jest.fn(async () => 64),
     readCharacteristicForService: jest.fn(async () => ({value: value()})),
+    writeCharacteristicWithResponseForService: jest.fn(async () => ({
+      value: '',
+    })),
     monitorCharacteristicForService: jest.fn(async (_s: any, _c: any, cb: any) => {
       setTimeout(() => cb(null, {value: value()}), 10);
       return {remove: jest.fn()};
@@ -72,6 +81,7 @@ jest.mock('react-native-ble-plx', () => {
 
   return {
     State,
+    __connected: connected,
     BleManager: jest.fn(() => ({
       state: jest.fn(async () => State.PoweredOn),
       startDeviceScan: jest.fn(async (_f: any, _o: any, cb: any) => cb(null, connected)),
@@ -148,6 +158,10 @@ async function press(tree: ReactTestRenderer.ReactTestRenderer, label: string) {
 
 beforeEach(() => {
   jest.useFakeTimers();
+  // The mocked device outlives each test, so its call list would otherwise
+  // carry the previous test's writes and "the first write" would be a lie.
+  require('react-native-ble-plx').__connected
+    .writeCharacteristicWithResponseForService.mockClear();
 });
 
 afterEach(() => {
@@ -266,6 +280,64 @@ test('the rename button is on the row, not the row itself', async () => {
   expect(textsOf(tree).filter(t => t === '-25.4')).toHaveLength(2);
   expect(textsOf(tree)).not.toContain('following');
   expect(before).not.toContain('following');
+
+  await ReactTestRenderer.act(async () => {
+    tree.unmount();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Find mode, per collar
+// ---------------------------------------------------------------------------
+
+test('the find button writes the command for that collar and no other', async () => {
+  mockRoster = rosterBytes([
+    {have: true, fresh: true, rssi: -70, snr: 9, age: 1, battery: 90},
+    {have: true, fresh: true, rssi: -55, snr: 11, age: 1, battery: 80},
+    {have: true, fresh: true, rssi: -40, snr: 12, age: 1, battery: 70},
+  ]);
+  const tree = await connect();
+
+  // Cat 2 is the one being hunted; its own row must offer the control.
+  await press(tree, 'Start find mode for Cat 2');
+
+  const device = require('react-native-ble-plx').__connected;
+  expect(device.writeCharacteristicWithResponseForService).toHaveBeenCalledTimes(1);
+  const [service, characteristic, payload] = (
+    device.writeCharacteristicWithResponseForService as jest.Mock
+  ).mock.calls[0];
+  expect(service).toBe('8e7a1b20-3f4d-4c8e-9a1f-2b6d5e4c3a21');
+  expect(characteristic).toBe('8e7a1b22-3f4d-4c8e-9a1f-2b6d5e4c3a21');
+  // [id, FIND_START, minutes] - id 1 is the middle entry, and getting this
+  // wrong would command a different cat with no visible error.
+  const bytes = Array.from(Buffer.from(payload, 'base64'));
+  expect(bytes).toEqual([1, 0x01, 15]);
+
+  // The row now says it is waiting rather than pretending it is done.
+  expect(textsOf(tree)).toContain('waiting for ping');
+
+  await ReactTestRenderer.act(async () => {
+    tree.unmount();
+  });
+});
+
+test('a collar that reports find active can be stopped from its row', async () => {
+  mockRoster = rosterBytes([
+    {have: false},
+    {have: true, fresh: true, rssi: -60, snr: 10, age: 1, battery: 88, findActive: true},
+    {have: false},
+  ]);
+  const tree = await connect();
+
+  // No local request, so the countdown is not invented - but the state is real.
+  expect(textsOf(tree)).toContain('finding');
+  await press(tree, 'Stop find mode for Cat 2');
+
+  const device = require('react-native-ble-plx').__connected;
+  const [, , payload] = (
+    device.writeCharacteristicWithResponseForService as jest.Mock
+  ).mock.calls[0];
+  expect(Array.from(Buffer.from(payload, 'base64'))).toEqual([1, 0x02, 0]);
 
   await ReactTestRenderer.act(async () => {
     tree.unmount();

@@ -188,3 +188,29 @@ transmit, i.e. ~0.26 mAh/day, which is not worth that failure mode.
 
 Still open: 20 attempts with the phone connected, and the real receive-window
 current.
+
+## 10. The phone's half, verified without the phone
+
+The app writes three bytes to `8e7a1b22-…` and reads the answer out of the
+roster, so the whole path can be driven from the bench:
+
+```
+$ python3 tools/ble_find.py --id 2 --minutes 2
+char 8e7a1b21-... ['read', 'notify']
+char 8e7a1b22-... ['write', 'write-without-response']
+writing ['0x2', '0x1', '0x2'] to the find characteristic
+t+  5.0s: id=2  -32.0 dBm  age  48s  flags 0x11 req
+t+ 20.0s: id=2  -32.0 dBm  age   0s  flags 0x23 active
+t+ 22.5s: id=2  -33.0 dBm  age   1s  flags 0x21 active
+```
+
+`req` appears immediately (the handheld is holding the request), `active` only
+after the collar's next ping - 20 s here, up to a slow interval in general - and
+then the collar's age drops to 0-1 s because it is pinging every 2 s.
+
+One wrinkle this exposed, now handled in the app: the roster repeats the flags
+of the *last ping received*, so after find mode ends (by duration or by stop)
+the roster keeps saying FIND_ACTIVE until the next slow ping arrives, up to a
+minute later. The app therefore reads a queued stop as "stopping" ahead of the
+collar's stale "active", and a finished countdown as "ending" rather than
+"finding · 0 min".

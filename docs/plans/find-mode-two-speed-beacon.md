@@ -317,6 +317,11 @@ Treat it as a separate project, not a port.
   mode.
 - Serial commands for bench testing: `find <id> [minutes]` and `stop <id>`.
 - BLE: add a **write** characteristic for commands (id, command, minutes).
+  **Done** - `FIND_UUID` = `8e7a1b22-…`, three bytes `[id, cmd, minutes]`, with
+  the write callback only setting the request under the mutex (it runs on the
+  NimBLE task and must never transmit). Verified without the phone:
+  `tools/ble_find.py --id 2 --minutes 2` makes a collar leave slow mode and start
+  reporting FIND_ACTIVE in the roster.
 - For find *status*, do not add a second notify characteristic. The roster's
   flags byte uses only bits 0-3, so **bit 4 = FIND\_REQUESTED and bit 5 =
   FIND\_ACTIVE** ride along in the existing 20-byte notification, with no version
@@ -356,8 +361,13 @@ Home Assistant recorder and dashboard. So:
 ## 7. Phone app and tools
 
 - App: on the followed cat's row add a Find toggle with states Idle, Waiting for
-  next ping (up to one slow interval), Active (minutes left) and Failed.
-  Tapping again sends stop.
+  next ping (up to one slow interval), Active (minutes left), Ending and Failed.
+  Tapping again sends stop. **Done** - see `CatTrackApp/src/find.ts` for the
+  state machine and the four rules it encodes: a queued stop outranks the
+  collar's stale "active"; a countdown that reaches zero reads "ending" rather
+  than "finding · 0 min"; a request with no ack after 200 s reads "failed"; and
+  each row carries its own toggle, so one cat being hunted never touches
+  another.
 - **Auto-request find when a walk starts on a followed cat.** At a 60 s slow
   interval the walking view is useless until find mode is entered, and an owner
   who has to discover that will conclude the tracker got worse.
@@ -494,8 +504,12 @@ cost is under ~1% of windows, skip inverted IQ entirely, and if it is applied,
 verify the uplink still decodes afterwards (that is the register-value trap in
 §4).
 
-**Phase 3 - handheld stale logic, base stations, BLE status, app UI and
-monitor.py.** Include the base-station windows from §6a and the Report emitter
+**Phase 3 - IN PROGRESS.** The app half is done (per-collar Find toggle, roster
+bits, write characteristic, `tools/ble_find.py`, 49 tests green). Still open:
+the base stations' freshness windows, and the handheld's `RPT` emitter that
+`tools/monitor.py` waits for.
+
+The remaining work: Include the base-station windows from §6a and the Report emitter
 from §7, and check ESP32-C3 flash headroom against the 99% history.
 
 **Phase 4 - field test and battery.** Run 24 h in normal mode including at least

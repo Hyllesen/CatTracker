@@ -37,6 +37,7 @@ import {
   isBluetoothEnabled,
   ScanResult,
   scanForHandheld,
+  sendFindCommand,
 } from './src/ble';
 import {
   Collar,
@@ -46,6 +47,14 @@ import {
   toneStepFor,
 } from './src/signal';
 import {CatNames, defaultName, loadNames, nameFor, saveName} from './src/cats';
+import {
+  DEFAULT_FIND_MINUTES,
+  FindAction,
+  FindKind,
+  FindRequest,
+  findStatus,
+  findToggle,
+} from './src/find';
 import {
   addMarker,
   addSample,
@@ -262,6 +271,10 @@ function CollarRow({
   isFocused,
   onPress,
   onRename,
+  findLabel,
+  findAction,
+  findKind,
+  onToggleFind,
 }: {
   collar: Collar;
   name: string;
@@ -269,6 +282,10 @@ function CollarRow({
   isFocused: boolean;
   onPress: () => void;
   onRename: () => void;
+  findLabel: string;
+  findAction: FindAction;
+  findKind: FindKind;
+  onToggleFind: () => void;
 }) {
   const detail: string[] = [];
   if (collar.have) {
@@ -307,6 +324,39 @@ function CollarRow({
         {collar.lowBattery ? (
           <Text style={styles.tagLowBatt}>low battery</Text>
         ) : null}
+        {findLabel ? (
+          <Text
+            style={[
+              styles.tagFind,
+              findKind === 'failed' ? styles.tagLost : null,
+            ]}>
+            {findLabel}
+          </Text>
+        ) : null}
+        {/* Per-collar, like everything else in this row: turning find mode on
+            for one cat must not touch the others, and pressing again turns it
+            off for that cat alone. */}
+        <Pressable
+          style={[
+            styles.findButton,
+            findAction === 'stop' ? styles.findButtonStop : null,
+          ]}
+          onPress={onToggleFind}
+          accessibilityRole="button"
+          accessibilityLabel={
+            findAction === 'stop'
+              ? `Stop find mode for ${name}`
+              : `Start find mode for ${name}`
+          }
+          hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
+          <Text
+            style={[
+              styles.findButtonText,
+              findAction === 'stop' ? styles.findButtonTextStop : null,
+            ]}>
+            {findAction === 'stop' ? 'stop' : 'find'}
+          </Text>
+        </Pressable>
         <Pressable
           style={styles.editButton}
           onPress={onRename}
@@ -344,6 +394,14 @@ function Tracker() {
   const [rec, setRec] = useState({on: false, rows: 0, secs: 0});
   const [csvNote, setCsvNote] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
+  // Find requests this app made, per collar. Only used for the "waiting" and
+  // "failed" wording and for the countdown: the authority on what a collar is
+  // actually doing is the roster's FIND_REQ / FIND_ACTIVE bits, which come back
+  // from the handheld and the collar itself.
+  const [findReqs, setFindReqs] = useState<Record<number, FindRequest>>({});
+  // When FIND_ACTIVE was first seen for each collar, so the app can count the
+  // asked-for duration down without a wire byte for it.
+  const findActiveSinceRef = useRef<Record<number, number>>({});
   const [draftName, setDraftName] = useState('');
   // Which cat the app is following. Null means "whichever is closest", which
   // is what you want while walking around; tapping a row pins it to that cat
@@ -383,6 +441,8 @@ function Tracker() {
     }
     timingRef.current = {};
     lastPacketRef.current = 0;
+    findActiveSinceRef.current = {};
+    setFindReqs({});
     setCollars([]);
     setFocus(null);
     setNow(Date.now());
@@ -392,6 +452,18 @@ function Tracker() {
   const onRoster = useCallback((r: Roster) => {
     setCollars(r.collars);
     setStatus('ready');
+
+    // Start the countdown when a collar first says it is in find mode, and drop
+    // it when the collar stops - which is how "finding · 3 min" becomes
+    // "finding · 2 min" without the collar sending a minutes byte.
+    const seenAt = Date.now();
+    for (const c of r.collars) {
+      if (c.findActive && findActiveSinceRef.current[c.id] === undefined) {
+        findActiveSinceRef.current[c.id] = seenAt;
+      } else if (!c.findActive && findActiveSinceRef.current[c.id] !== undefined) {
+        delete findActiveSinceRef.current[c.id];
+      }
+    }
 
     // The handheld also publishes on receive timeout and as a keep-alive, so
     // the stream arrives far faster than one packet per beacon. `fresh` marks
@@ -643,6 +715,44 @@ function Tracker() {
     [setFocus],
   );
 
+  /**
+   * Ask one collar to start or stop find mode.
+   *
+   * Deliberately local: the request is remembered here so the row can say
+   * "waiting", and the write is fire-and-report. The collar only listens in a
+   * short window after each of its own pings, so nothing can happen
+   * immediately - and pretending otherwise ("Finding!") would be a lie for up
+   * to a minute.
+   */
+  const toggleFind = useCallback(
+    async (collar: Collar) => {
+      const device = deviceRef.current;
+      if (!device) {
+        setError('Not connected to the handheld.');
+        return;
+      }
+      const at = Date.now();
+      const request = findReqs[collar.id];
+      const {action} = findToggle(
+        collar,
+        request,
+        at,
+        findActiveSinceRef.current[collar.id] ?? null,
+      );
+      setError(null);
+      setFindReqs(prev => ({
+        ...prev,
+        [collar.id]: {action, minutes: DEFAULT_FIND_MINUTES, at},
+      }));
+      try {
+        await sendFindCommand(device, collar.id, action, DEFAULT_FIND_MINUTES);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [findReqs],
+  );
+
   return (
     <View style={[styles.container, {paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16}]}>
       <StatusBar barStyle="light-content" />
@@ -657,17 +767,27 @@ function Tracker() {
           // the state of the signal. This one is about the list itself.
           <Text style={styles.rosterEmpty}>No collars heard yet</Text>
         ) : (
-          heard.map(c => (
-            <CollarRow
-              key={c.id}
-              collar={c}
-              name={nameFor(names, c.id)}
-              isLeader={leader?.id === c.id}
-              isFocused={focusId === c.id}
-              onPress={() => toggleFocus(c.id)}
-              onRename={() => openRename(c.id)}
-            />
-          ))
+          heard.map(c => {
+            const request = findReqs[c.id];
+            const activeSince = findActiveSinceRef.current[c.id] ?? null;
+            const findState = findStatus(c, request, now, activeSince);
+            const toggle = findToggle(c, request, now, activeSince);
+            return (
+              <CollarRow
+                key={c.id}
+                collar={c}
+                name={nameFor(names, c.id)}
+                isLeader={leader?.id === c.id}
+                isFocused={focusId === c.id}
+                onPress={() => toggleFocus(c.id)}
+                onRename={() => openRename(c.id)}
+                findLabel={findState.label}
+                findAction={toggle.action}
+                findKind={toggle.kind}
+                onToggleFind={() => toggleFind(c)}
+              />
+            );
+          })
         )}
       </View>
 
@@ -895,6 +1015,34 @@ const styles = StyleSheet.create({
     marginLeft: 'auto',
     paddingLeft: 12,
     paddingVertical: 2,
+  },
+  tagFind: {
+    color: '#f39c12',
+    fontSize: 11,
+    marginLeft: 8,
+    fontWeight: '600',
+  },
+  // Deliberately small and quiet: this is a control you press once at the
+  // start of a hunt, not the thing you read while walking. The reading above
+  // stays the biggest thing on the screen.
+  findButton: {
+    marginLeft: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#f39c12',
+  },
+  findButtonStop: {
+    borderColor: '#e74c3c',
+  },
+  findButtonText: {
+    color: '#f39c12',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  findButtonTextStop: {
+    color: '#e74c3c',
   },
   editIcon: {
     color: '#5d6d7e',

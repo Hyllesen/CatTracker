@@ -22,6 +22,8 @@ function collar(overrides: Partial<Collar> = {}): Collar {
     fresh: false,
     stale: false,
     lowBattery: false,
+    findRequested: false,
+    findActive: false,
     rssi: -25.4,
     snr: 12,
     percent: 74,

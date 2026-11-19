@@ -13,6 +13,12 @@ import {
   decodeLegacy,
   decodeRoster,
 } from './signal';
+import {
+  DEFAULT_FIND_MINUTES,
+  FIND_CHAR_UUID,
+  FindAction,
+  encodeFindCommand,
+} from './find';
 
 export type Status =
   | 'idle'
@@ -55,6 +61,26 @@ function base64ToBytes(b64: string): Uint8Array {
     }
   }
   return out.subarray(0, index);
+}
+
+/**
+ * The inverse of base64ToBytes, for characteristic writes. Same reason: no
+ * Buffer in the React Native runtime.
+ */
+function bytesToBase64(bytes: Uint8Array): string {
+  const chars =
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < bytes.length ? bytes[i + 1] : undefined;
+    const b2 = i + 2 < bytes.length ? bytes[i + 2] : undefined;
+    out += chars[b0 >> 2];
+    out += chars[((b0 & 0x03) << 4) | ((b1 ?? 0) >> 4)];
+    out += b1 === undefined ? '=' : chars[((b1 & 0x0f) << 2) | ((b2 ?? 0) >> 6)];
+    out += b2 === undefined ? '=' : chars[b2 & 0x3f];
+  }
+  return out;
 }
 
 /**
@@ -170,6 +196,29 @@ export async function connectAndSubscribe(
         onRoster(roster);
       }
     },
+  );
+}
+
+/**
+ * Ask the handheld for find mode on one collar, or for it to stop.
+ *
+ * Write-with-response, so a rejected write is an error the user can see rather
+ * than a silent no-op. Note this does not mean the collar heard it: the command
+ * only goes out inside the window after that collar's next ping, so the roster's
+ * FIND_REQ / FIND_ACTIVE flags are what actually describe progress. See
+ * src/find.ts.
+ */
+export async function sendFindCommand(
+  device: Device,
+  collarId: number,
+  action: FindAction,
+  minutes: number = DEFAULT_FIND_MINUTES,
+): Promise<void> {
+  const bytes = encodeFindCommand(collarId, action, minutes);
+  await device.writeCharacteristicWithResponseForService(
+    SERVICE_UUID,
+    FIND_CHAR_UUID,
+    bytesToBase64(bytes),
   );
 }
 

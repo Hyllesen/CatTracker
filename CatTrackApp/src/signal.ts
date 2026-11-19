@@ -50,6 +50,21 @@ export const ROSTER_FLAG_HAVE = 0x01;
 export const ROSTER_FLAG_FRESH = 0x02;
 export const ROSTER_FLAG_STALE = 0x04;
 export const ROSTER_FLAG_LOW_BATT = 0x08;
+/**
+ * Find mode, per collar.
+ *
+ * Bits 4-5 are the two the flags byte never used, so this needs no new
+ * characteristic, no longer notification and no MTU negotiation - and an app
+ * that does not know about them simply ignores them.
+ *
+ * REQUESTED is the handheld saying "I have a find request for this cat and am
+ * waiting for its next ping". ACTIVE is the collar saying "I heard you and I am
+ * pinging fast". The two are different states and the phone should show them
+ * differently: requested can last up to one slow interval (60 s), active is
+ * the thing the owner is waiting for.
+ */
+export const ROSTER_FLAG_FIND_REQ = 0x10;
+export const ROSTER_FLAG_FIND_ACTIVE = 0x20;
 
 /** Byte value the firmware sends for "battery pin not wired / no reading". */
 export const BATTERY_UNKNOWN = 255;
@@ -81,6 +96,10 @@ export type Collar = {
   stale: boolean;
   /** True when the collar reports a low battery. */
   lowBattery: boolean;
+  /** True when the handheld is holding a find request for this collar. */
+  findRequested: boolean;
+  /** True when the collar itself says it is in find mode. */
+  findActive: boolean;
   /** RSSI of the latest packet in dBm, or null before the first packet. */
   rssi: number | null;
   /** Demodulator SNR of that same packet in dB, or null before the first. */
@@ -160,6 +179,8 @@ export function decodeRoster(bytes: Uint8Array | null): Roster | null {
       fresh: (flags & ROSTER_FLAG_FRESH) !== 0,
       stale: (flags & ROSTER_FLAG_STALE) !== 0,
       lowBattery: (flags & ROSTER_FLAG_LOW_BATT) !== 0,
+      findRequested: (flags & ROSTER_FLAG_FIND_REQ) !== 0,
+      findActive: (flags & ROSTER_FLAG_FIND_ACTIVE) !== 0,
       rssi,
       // SNR only means anything alongside a real packet.
       snr: have ? toInt8(bytes[o + 3]) / 2 : null,
@@ -252,6 +273,9 @@ export function decodeLegacy(bytes: Uint8Array | null): Roster | null {
         fresh: (flags & LEGACY_FLAG_FRESH) !== 0,
         stale: (flags & LEGACY_FLAG_STALE) !== 0,
         lowBattery: false,
+        // The legacy packet predates find mode, so it cannot be in it.
+        findRequested: false,
+        findActive: false,
         rssi,
         snr: rssi === null ? null : snrRaw / 10,
         percent: bytes[5],

@@ -458,10 +458,8 @@ void buildFrame(uint8_t* out) {
   out[1] = seqCounter++;
   out[2] = COLLAR_ID;
   out[3] = batteryValid ? batteryPct : BATT_UNKNOWN;
-  uint8_t flags = 0;
-  if (batteryValid && batteryPct < 15) flags |= FLAG_LOW_BATT;
-  if (findMode) flags |= FLAG_FIND;
-  out[4] = flags;
+  out[4] = (uint8_t)((batteryValid && batteryPct < 15 ? FLAG_LOW_BATT : 0x00) |
+                     (findMode ? FLAG_FIND : 0x00));
   out[5] = minutesLeft();
 }
 

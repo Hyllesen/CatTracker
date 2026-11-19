@@ -19,12 +19,15 @@ import path from 'path';
 import {
   MAX_COLLARS,
   ROSTER_ENTRY_LEN,
+  ROSTER_FLAG_FIND_ACTIVE,
+  ROSTER_FLAG_FIND_REQ,
   ROSTER_FLAG_FRESH,
   ROSTER_FLAG_HAVE,
   ROSTER_FLAG_LOW_BATT,
   ROSTER_FLAG_STALE,
   ROSTER_VERSION,
 } from '../src/signal';
+import {FIND_CHAR_UUID, FIND_START, FIND_STOP} from '../src/find';
 
 const ROOT = path.join(__dirname, '..', '..');
 
@@ -145,4 +148,78 @@ test('the app reads the roster entry at the offsets the handheld writes', () => 
   expect(app).toMatch(/toInt8\(bytes\[o \+ 3\]\)/);
   expect(app).toMatch(/bytes\[o \+ 4\]/);
   expect(app).toMatch(/bytes\[o \+ 5\]/);
+});
+
+/** Read a `#define NAME 123` out of a firmware source. */
+function defineNumber(src: string, name: string): number {
+  const match = src.match(new RegExp(`#define\\s+${name}\\s+(\\d+)`));
+  if (!match) {
+    throw new Error(`${name} not found in the firmware source`);
+  }
+  return Number(match[1]);
+}
+
+/** Read a `#define NAME "value"` out of a firmware source. */
+function defineString(src: string, name: string): string {
+  const match = src.match(new RegExp(`#define\\s+${name}\\s+"([^"]+)"`));
+  if (!match) {
+    throw new Error(`${name} not found in the firmware source`);
+  }
+  return match[1];
+}
+
+// ---------------------------------------------------------------------------
+// Find mode: the newest part of the contract, and the one with the most ends
+// ---------------------------------------------------------------------------
+// A find command is written by the phone, held by the handheld, transmitted in
+// a window the collar controls, and acknowledged in a ping. Four files that no
+// compiler sees together.
+
+test('the find flags the app decodes are the ones the handheld sets', () => {
+  // The collar's frame flag and the roster flag are different bits in
+  // different bytes: the frame is byte 4 bit 1, the roster is byte 0 bit 5.
+  expect(constant(collar, 'FLAG_FIND')).toBe(0x02);
+  expect(constant(handheld, 'FRAME_FLAG_FIND')).toBe(0x02);
+  expect(ROSTER_FLAG_FIND_REQ).toBe(0x10);
+  expect(ROSTER_FLAG_FIND_ACTIVE).toBe(0x20);
+  // And they must not collide with the four bits that were already taken.
+  for (const taken of [
+    ROSTER_FLAG_HAVE,
+    ROSTER_FLAG_FRESH,
+    ROSTER_FLAG_STALE,
+    ROSTER_FLAG_LOW_BATT,
+  ]) {
+    expect(taken & ROSTER_FLAG_FIND_REQ).toBe(0);
+    expect(taken & ROSTER_FLAG_FIND_ACTIVE).toBe(0);
+  }
+});
+
+test('the collar and the handheld agree on the command frame', () => {
+  expect(constant(collar, 'CMD_MAGIC')).toBe(0xc2);
+  expect(constant(handheld, 'CMD_MAGIC')).toBe(0xc2);
+  expect(constant(collar, 'CMD_LEN')).toBe(6);
+  expect(constant(handheld, 'CMD_LEN')).toBe(6);
+  expect(constant(collar, 'CMD_FIND_START')).toBe(FIND_START);
+  expect(constant(collar, 'CMD_FIND_STOP')).toBe(FIND_STOP);
+  // A command must never be mistakable for a ping.
+  expect(constant(collar, 'CMD_MAGIC')).not.toBe(constant(collar, 'FRAME_MAGIC'));
+});
+
+test('the find write characteristic is the same UUID on both sides', () => {
+  expect(defineString(handheld, 'FIND_UUID')).toBe(FIND_CHAR_UUID);
+  expect(FIND_CHAR_UUID).not.toBe(defineString(handheld, 'SIGNAL_UUID'));
+});
+
+test("the handheld's receive window covers the collar's slow interval", () => {
+  // The collar is the one that decides how quiet it goes, and a handheld window
+  // shorter than that is deaf for most of every cycle - which looks exactly
+  // like a dead collar.
+  const slowMs = 1000 * defineNumber(collar, 'SLOW_INTERVAL_S');
+  expect(constant(handheld, 'COLLAR_SLOW_MS')).toBe(slowMs);
+  // Both windows are written as expressions built from that number.
+  expect(handheld).toMatch(/COLLAR_PING_MS\s*=\s*COLLAR_SLOW_MS\s*\+/);
+  expect(handheld).toMatch(/RX_TIMEOUT_MS\s*=\s*COLLAR_PING_MS\s*\+/);
+  // STALE_MS is written as an expression rather than a literal, so compare the
+  // expression: it has to be derived from the same number, not typed in.
+  expect(handheld).toMatch(/STALE_MS\s*=\s*\(\s*COLLAR_SLOW_MS\s*\*\s*5\s*\)\s*\/\s*2/);
 });

@@ -216,9 +216,11 @@ const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;   // 63200 ms
 // ---- BLE ----
 #define SERVICE_UUID "8e7a1b20-3f4d-4c8e-9a1f-2b6d5e4c3a21"
 #define SIGNAL_UUID  "8e7a1b21-3f4d-4c8e-9a1f-2b6d5e4c3a21"
+#define FIND_UUID    "8e7a1b22-3f4d-4c8e-9a1f-2b6d5e4c3a21"
 #define DEVICE_NAME  "CatTracker"
 
 BLECharacteristic* signalChar = nullptr;
+BLECharacteristic* findChar   = nullptr;
 
 // Set true with 'v' on the serial port when debugging.
 //
@@ -553,6 +555,48 @@ class ServerCb : public BLEServerCallbacks {
   }
 };
 
+// ---------------------------------------------------------------------------
+// Find command characteristic (phone -> handheld)
+// ---------------------------------------------------------------------------
+// Three bytes, little thought required:
+//
+//   [0] collar id
+//   [1] 0x01 FIND_START, 0x02 FIND_STOP
+//   [2] minutes for FIND_START (0 = the collar's default)
+//
+// A longer write is accepted and the tail ignored, so the format can grow
+// without invalidating an older app.
+//
+// This callback runs on the NimBLE task. It must NOT touch the radio: the
+// command can only be transmitted inside the window after that collar's next
+// ping, which is loop()'s job. So it sets the request and returns.
+class FindCharCb : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* ch) override {
+    if (!ch) return;
+    uint8_t* d = ch->getData();
+    size_t n = ch->getLength();
+    if (!d || n < 2) return;
+
+    const uint8_t id = d[0];
+    const uint8_t cmd = d[1];
+    const uint8_t minutes = (n > 2) ? d[2] : 0;
+    if (id >= MAX_COLLARS) return;
+    if (cmd != CMD_FIND_START && cmd != CMD_FIND_STOP) return;
+
+    portENTER_CRITICAL(&stateMux);
+    findRequest[id] = (cmd == CMD_FIND_START) ? FIND_REQ_START : FIND_REQ_STOP;
+    findMinutes[id] = minutes ? minutes : 15;
+    findTries[id] = 0;
+    portEXIT_CRITICAL(&stateMux);
+
+    Serial.print(F("[ble] find write id="));
+    Serial.print((int)id);
+    Serial.print(cmd == CMD_FIND_START ? F(" START ") : F(" STOP "));
+    Serial.print((int)minutes);
+    Serial.println(F(" min - queued for the next ping"));
+  }
+};
+
 void setupBLE() {
   BLEDevice::init(DEVICE_NAME);
   BLEDevice::setMTU(64);
@@ -573,6 +617,15 @@ void setupBLE() {
   // happen to ping after it connected - which is how you end up convinced
   // that one cat is missing.
   signalChar->setCallbacks(new SignalCharCb());
+
+  // The downlink. WRITE (with response) so the phone learns the write was
+  // accepted; WRITE_NR as well so an app that does not wait for the response
+  // still works.
+  findChar = svc->createCharacteristic(
+      FIND_UUID,
+      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  findChar->setCallbacks(new FindCharCb());
+
   svc->start();
 
   BLEAdvertising* adv = BLEDevice::getAdvertising();
@@ -992,20 +1045,39 @@ void loop() {
     // set for a start, clear for a stop. Retry on up to 3 pings, then give up
     // and say so, because "silently never worked" is the worst failure mode
     // here - the owner is out looking for a cat.
-    if (id >= 0 && findRequest[id] != FIND_REQ_NONE) {
-      const bool wantActive = (findRequest[id] == FIND_REQ_START);
+    // The request state is written by the NimBLE task (a phone write) and read
+    // here, so take a copy under the mutex and do the transmit outside it - a
+    // transmit takes ~144 ms and holding the lock that long would block the
+    // BLE callback.
+    uint8_t req = FIND_REQ_NONE;
+    uint8_t reqMinutes = 15;
+    uint8_t reqTries = 0;
+    if (id >= 0) {
+      portENTER_CRITICAL(&stateMux);
+      req = findRequest[id];
+      reqMinutes = findMinutes[id];
+      reqTries = findTries[id];
+      portEXIT_CRITICAL(&stateMux);
+    }
+
+    if (id >= 0 && req != FIND_REQ_NONE) {
+      const bool wantActive = (req == FIND_REQ_START);
       if (collars[id].findActive == wantActive) {
+        portENTER_CRITICAL(&stateMux);
         findRequest[id] = FIND_REQ_NONE;
         findTries[id] = 0;
+        portEXIT_CRITICAL(&stateMux);
         findAcked++;
         Serial.print(F("[find] acked id="));
         Serial.print((int)id);
         Serial.print(wantActive ? F(" active, ") : F(" stopped, "));
         Serial.print((int)collars[id].findMinutes);
         Serial.println(F(" min left"));
-      } else if (findTries[id] >= 3) {
+      } else if (reqTries >= 3) {
+        portENTER_CRITICAL(&stateMux);
         findRequest[id] = FIND_REQ_NONE;
         findTries[id] = 0;
+        portEXIT_CRITICAL(&stateMux);
         findFailed++;
         Serial.print(F("[find] FAILED id="));
         Serial.print((int)id);
@@ -1013,13 +1085,15 @@ void loop() {
       } else {
         bool ok = sendCommand((uint8_t)id,
                               wantActive ? CMD_FIND_START : CMD_FIND_STOP,
-                              wantActive ? findMinutes[id] : 0);
-        findTries[id]++;
+                              wantActive ? reqMinutes : 0);
+        portENTER_CRITICAL(&stateMux);
+        findTries[id] = (uint8_t)(reqTries + 1);
+        portEXIT_CRITICAL(&stateMux);
         findSent++;
         Serial.print(F("[find] sent id="));
         Serial.print((int)id);
         Serial.print(wantActive ? F(" START ") : F(" STOP "));
-        Serial.print((int)findTries[id]);
+        Serial.print((int)(reqTries + 1));
         Serial.print(F("/3 "));
         Serial.println(ok ? F("ok") : F("TIMEOUT"));
       }
