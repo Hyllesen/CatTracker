@@ -249,6 +249,26 @@ Two further safety measures:
   `2 + count×6 > bytes.length`, so a truncated notification is rejected
   outright rather than read as a roster that is missing a cat.
 
+## Find mode is per collar
+
+Every collar in the roster carries its own find state, and the states are
+independent by construction rather than by convention:
+
+- the phone's find button belongs to one row (`findRequest[id]`,
+  `findMinutes[id]` in the handheld);
+- the command is only transmitted inside **that collar's** post-ping window, so
+  two collars being hunted at once means two separate transmissions, each in its
+  own window - they never share a frame;
+- the acknowledgement is that collar's own next ping (`flags` bit 1 plus the
+  minutes left in byte 5), which the handheld republishes as roster bits 4/5 for
+  that entry only.
+
+So "find Chichi" cannot change Onanda's cadence even if both are in range, and
+the row for a cat that is not being hunted keeps reporting its slow 60 s
+interval. At two seconds in find mode a collar occupies ~7% of the airtime in
+its own window slot, which is why three collars hunting at once still fit
+without a schedule.
+
 ## File-by-file changes
 
 | File | Change |
@@ -260,7 +280,7 @@ Two further safety measures:
 | `CatTrackApp/src/ble.ts` | `readRoster()` on connect |
 | `CatTrackApp/src/cats.ts` | New: read/write `cats.json` in DocumentDir |
 | `CatTrackApp/App.tsx` | Roster state, one row per cat, per-collar tone policy + stall detection |
-| `CatTrackApp/src/logging.ts` | CSV gains an `id` column (one file, mixed IDs) |
+| `CatTrackApp/src/logging.ts` | CSV gains an `id` column (one file, mixed IDs). The recorder was removed from the app on 2026-11-19; the file is in git history if walk CSVs are wanted again |
 | `CatTrackApp/__tests__/signal.test.ts` | Decoder tests ported to the roster format |
 | `tools/analyze_walk.py` | Reads the `id` column, reports per collar |
 | `collar/README.md` | Documents the frame + the ID/period rule |

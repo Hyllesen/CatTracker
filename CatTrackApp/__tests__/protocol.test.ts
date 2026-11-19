@@ -28,6 +28,7 @@ import {
   ROSTER_VERSION,
 } from '../src/signal';
 import {FIND_CHAR_UUID, FIND_START, FIND_STOP} from '../src/find';
+import {BATTERY_SAMPLE_MINUTES} from '../src/signal';
 
 const ROOT = path.join(__dirname, '..', '..');
 
@@ -222,4 +223,12 @@ test("the handheld's receive window covers the collar's slow interval", () => {
   // STALE_MS is written as an expression rather than a literal, so compare the
   // expression: it has to be derived from the same number, not typed in.
   expect(handheld).toMatch(/STALE_MS\s*=\s*\(\s*COLLAR_SLOW_MS\s*\*\s*5\s*\)\s*\/\s*2/);
+});
+
+test('the battery figure the app labels as slow really is slow', () => {
+  // The app tells the owner "10-min sample" next to the percentage. That is only
+  // honest while the collar keeps BATT_SAMPLE_MS at 600000; a DEV_MODE build
+  // samples every 5 s, and a future build may change it again.
+  expect(collar).toContain('const uint32_t BATT_SAMPLE_MS = 600000;');
+  expect(BATTERY_SAMPLE_MINUTES).toBe(600000 / 60000);
 });

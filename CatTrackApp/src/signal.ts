@@ -132,6 +132,40 @@ export function rssiToPercent(rssi: number): number {
   return Math.round(((rssi - RSSI_FLOOR) * 100) / (RSSI_CEIL - RSSI_FLOOR));
 }
 
+/**
+ * How often the collar samples its cell, in minutes.
+ *
+ * The collar reads the battery on its own much slower schedule than its pings
+ * (BATT_SAMPLE_MS in collar/collar.ino: 600000 in production, 5 s in DEV_MODE)
+ * and every ping carries that last sample. So a battery figure can be up to ten
+ * minutes old even though the ping is two seconds old, and the screen has to
+ * say so - a percentage that looks live but is not is worse than no percentage.
+ * __tests__/protocol.test.ts pins this against the firmware.
+ */
+export const BATTERY_SAMPLE_MINUTES = 10;
+
+/**
+ * Colour for a demodulator SNR reading, in dB.
+ *
+ * Separate from the RSSI colour on purpose: they answer different questions.
+ * RSSI says how much signal arrived, SNR says how cleanly it could be
+ * demodulated, and a strong-but-dirty signal is a real situation (multipath,
+ * interference) where the dBm number is reassuring and the link is not. Under
+ * 0 dB the chirps are barely above the noise floor; ~8 dB and up is comfortable.
+ */
+export function snrColor(snr: number | null): string {
+  if (snr === null) {
+    return '#5d6d7e';
+  }
+  if (snr < 0) {
+    return '#e74c3c';
+  }
+  if (snr < 8) {
+    return '#f39c12';
+  }
+  return '#2ecc71';
+}
+
 function toInt16(bytes: Uint8Array, offset: number): number {
   const u = bytes[offset] | (bytes[offset + 1] << 8);
   return u >= 0x8000 ? u - 0x10000 : u;

@@ -368,6 +368,11 @@ Home Assistant recorder and dashboard. So:
   than "finding · 0 min"; a request with no ack after 200 s reads "failed"; and
   each row carries its own toggle, so one cat being hunted never touches
   another.
+- The row now carries the find control and nothing else: the range-test
+  recorder and the tone mute button are gone (both were ways to make the app
+  quietly useless - a silent tracker and a stale CSV), and the battery figure is
+  labelled with its 10-minute sample interval because a percentage that looks
+  live but is ten minutes old is worse than no percentage.
 - **Auto-request find when a walk starts on a followed cat.** At a 60 s slow
   interval the walking view is useless until find mode is entered, and an owner
   who has to discover that will conclude the tracker got worse.

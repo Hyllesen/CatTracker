@@ -23,7 +23,6 @@ export const SILENT_STEP = 0;
 const sounds = new Map<number, Sound>();
 const loaded = new Set<number>();
 
-let enabled = true;
 let prepared = false;
 
 // Loading is a native round trip per file, so do it once up front rather than
@@ -57,11 +56,13 @@ export function prepareTones(): void {
 /**
  * Play the tone for a signal step.
  *
- * No-ops for step 0 and while muted, so a lost signal reads as silence and the
- * caller does not need to special-case it.
+ * No-ops for step 0, so a lost signal reads as silence and the caller does not
+ * need to special-case it. There is no mute switch: the tone is the point of
+ * the app, and a tracker that can be left accidentally silent is worse than one
+ * that cannot. The phone's media volume is the control.
  */
 export function playToneStep(step: number): void {
-  if (!enabled || step <= SILENT_STEP || step > TONE_STEPS) {
+  if (step <= SILENT_STEP || step > TONE_STEPS) {
     return;
   }
 
@@ -83,25 +84,6 @@ export function playToneStep(step: number): void {
   // preceding seek is what silently swallowed every beep after the first.
   sound.setCurrentTime(0);
   sound.play();
-}
-
-export function setTonesEnabled(value: boolean): void {
-  enabled = value;
-  if (!value) {
-    stopAllTones();
-  }
-}
-
-export function tonesEnabled(): boolean {
-  return enabled;
-}
-
-function stopAllTones(): void {
-  sounds.forEach(sound => {
-    if (sound.isPlaying()) {
-      sound.stop();
-    }
-  });
 }
 
 /** Free the native players. Call when tearing the tracker screen down. */

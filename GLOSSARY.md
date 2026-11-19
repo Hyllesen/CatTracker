@@ -88,3 +88,23 @@ _Avoid_: Dropped, lost, collision
 A packet naming a collar id this handheld's build does not know. Counted and
 dropped, never folded into another collar's row.
 _Avoid_: Phantom cat, bad packet
+
+**Find mode**:
+The collar's fast state: a ping every 2 s instead of every 60 s, so the tone and
+the reading update while someone walks toward a cat. It lasts a fixed number of
+pings (15 minutes by default), reverts by itself, and is entered only by a
+command addressed to that one collar - so one cat being hunted never changes
+another's cadence. After a reboot a collar is always slow.
+
+**Listen window**:
+The 120 ms the collar spends in receive immediately after each of its own pings.
+It is the entire downlink: the handheld has just decoded that ping, so it knows
+the collar is listening and can answer within a few milliseconds. It is extended
+to 300 ms only while a real header has demodulated (`ValidHeader`), because the
+command packet does not finish until ~148 ms after the ping ends.
+
+**Find request**:
+What the phone and the handheld hold between the owner pressing find and the
+collar's next ping. It cannot be transmitted at will - the collar is deaf in
+between - so the request waits, and the row says `waiting for ping` rather than
+pretending the cat has been told. The collar's own ping is the acknowledgement.

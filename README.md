@@ -50,7 +50,18 @@ dBm in the largest type on the screen.
   the tone follows it too, so the beep and the display always agree on which
   cat you are walking towards. Tap it again to go back to following the
   closest one.
+- **The find button** on a row puts *that* collar into find mode: it pings every
+  2 s instead of every 60 s, so the tone and the reading update while you walk,
+  and it reverts by itself after the asked-for minutes. Pressing the button
+  again turns it off for that collar only. The row says `waiting for ping` until
+  the collar acknowledges (up to a minute), then `finding · N min`, `ending`,
+  or `find failed` if the cat is out of range.
 - **The pencil** at the end of a row renames that cat.
+
+Find mode is a downlink, and it is the only one the system has: the phone writes
+three bytes to the handheld, which holds them until the requested collar's next
+ping and transmits inside the short receive window that follows it. See
+`collar/README.md` → "Find mode: the post-ping listen window".
 
 ```bash
 tools/build_release.sh --install <adb-serial>   # build the release APK and install it
@@ -68,11 +79,19 @@ To check the handheld's half of the link without a phone in the loop:
 
 ```bash
 python3 tools/ble_roster.py 30
+python3 tools/ble_find.py --id 2 --minutes 5    # the phone's find button, without the phone
 ```
 
-It connects to the handheld over BLE and decodes the roster the way the
+The first connects to the handheld over BLE and decodes the roster the way the
 phone does. An app that shows nothing looks identical to an app that is not
-connected, so this is the way to tell those two apart.
+connected, so this is the way to tell those two apart. The second writes the
+same three find bytes the app writes, and prints the roster so you can watch
+`req` turn into `active`.
+
+**Do not hold the handheld's serial port open while the phone is connected.**
+Opening it resets the ESP32-C3 and drops the BLE link, which the app reports as
+a dead connection (it reconnects by itself, but the find request in flight is
+lost).
 
 **MIUI (Xiaomi) blocks `adb shell input tap`** — injecting input events needs
 the INJECT_EVENTS permission, which MIUI withholds from adb. So the app's

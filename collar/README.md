@@ -1,7 +1,8 @@
 # Cat Collar Transmitter — Setup
 
 TENSTAR ROBOT nRF52840 Pro Micro + RA-02 (SX1278, 433 MHz), powered by a
-150 mAh LiPo. Pings every 8 s; the handheld at `../handheld_ble`
+150 mAh LiPo. Pings every 60 s, or every 2 s while it is in **find mode**; the
+handheld at `../handheld_ble`
 receives them and forwards the signal to the phone.
 
 Several collars can run at once: each is flashed with its own id
@@ -162,8 +163,8 @@ Six bytes, sent every ping:
 | 1 | `seq` — wrapping 0..255, increments every ping |
 | 2 | `id` — 0, 1 or 2. Set at flash time with `-DCOLLAR_ID=` |
 | 3 | `battery` — 0..100, or `0xFF` when the ADC pin is unwired |
-| 4 | `flags` — bit0 = LOW_BATT (under 15%) |
-| 5 | reserved |
+| 4 | `flags` — bit0 = LOW_BATT (under 15%), bit1 = FIND_ACTIVE |
+| 5 | minutes of find mode left (0 = not in find mode, saturates at 255) |
 
 **Six bytes is not an arbitrary number.** At SF9/BW125 the payload rounds up to
 whole symbols, so five bytes and six bytes cost exactly the same airtime:
@@ -176,6 +177,34 @@ the collar's power budget, once the fixed draws are gone.
 There is **no CRC of our own**: LoRa already puts a mandatory CRC on the
 payload. The magic byte is there for a different reason — it rejects stray
 decoded frames so garbage never becomes a phantom cat on the phone.
+
+Byte 5 was reserved until find mode; it now carries the minutes left and is
+written as 0 whenever find mode is off, so nothing downstream can read a stale
+number. It is safe to reuse because the handheld reads only bytes 1–4, the base
+station's `collar_frame.h` ignores it, and the app never sees a collar frame.
+
+### Command frame (the other direction)
+
+Six bytes, handheld → collar, same air settings and sync word:
+
+| Byte | Meaning |
+|------|---------|
+| 0 | `0xC2` — magic. A ping is `0xC1`, so the two can never be confused |
+| 1 | target collar id |
+| 2 | command: `0x01` FIND_START, `0x02` FIND_STOP |
+| 3 | minutes for FIND_START (0 = this build's `FIND_DURATION_MIN`) |
+| 4 | command sequence number, for logs |
+| 5 | reserved, 0 |
+
+**The collar ignores anything with the wrong magic, the wrong id, an unknown
+command, a payload CRC error, or a length that is not 6.** Those are the only
+things standing between a stray frame and a cat being told to shout.
+
+**The command preamble must be 8 symbols — the same as this collar's.** Measured
+on the bench: a collar whose `RegPreambleLsb` is 8 decodes an 8-symbol command
+(3 of 3) and decodes **nothing** at 16, 24 or 32 (0 of 12). A longer preamble is
+not safer, it is silently fatal, and it looks exactly like a handheld that is
+not transmitting. See `docs/plans/find-mode-bench-findings.md` §3.
 
 ### The collar id
 
@@ -226,18 +255,24 @@ Write it on the enclosure. It is the only thing that identifies the hardware
 rather than the firmware, and it is what lets you answer "I just flashed
 Miso's collar, not the spare" without powering anything up.
 
-### `PING_INTERVAL_MS` is a field value
+### The ping interval is a field value, and it has two speeds
 
-It is currently **8000 ms**, and each collar adds its own offset on top:
+`SLOW_INTERVAL_S` is **60 s** and `FAST_INTERVAL_S` is **2 s**, and each collar
+adds its own offset on top of whichever applies:
 
 ```cpp
-const uint32_t PING_INTERVAL_MS    = 8000;
-const uint32_t PING_PERIOD_STEP_MS = 137;
-const uint32_t COLLAR_PERIOD_MS    = PING_INTERVAL_MS + COLLAR_ID * PING_PERIOD_STEP_MS;
+uint32_t periodMs() {
+  uint32_t base = (findMode ? FAST_INTERVAL_S : SLOW_INTERVAL_S) * 1000UL;
+  return base + COLLAR_ID * PING_PERIOD_STEP_MS;   // 137 ms per id
+}
 ```
 
-So collar 0 pings every 8.000 s, collar 1 every 8.137 s and collar 2 every
-8.274 s.
+So collar 0 pings every 60.000 s and collar 2 every 60.274 s, dropping to 2.000
+and 2.274 s while it is in find mode.
+
+Both numbers are compile-time flags (`-DSLOW_INTERVAL_S=`, `-DFAST_INTERVAL_S=`)
+whose defaults are the production values; a bench build with `SLOW_INTERVAL_S=10`
+makes a test cycle quick without touching anything else.
 
 **Why a different period per collar rather than a fixed phase?** A fixed
 phase — every collar pings every 8 s, but collar 2 waits 2.7 s before its
@@ -275,6 +310,13 @@ The three always-on loads are gone. Measured against the same cell:
 | 1 s | busy loop, radio in standby | ~5 h |
 | 5 s | busy loop, radio in standby | ~16 h |
 | 8 s | idle loop, radio asleep, SAADC gated | **~39 h** |
+| 60 s | idle loop, asleep, plus the 120 ms listen window | **~13 days** (model) |
+
+The 60 s row is the current production interval and a model, not a measurement:
+~18 mAs of transmit per ping dominates, the receive window adds ~18 µA and the
+idle current ~3.6 mAh/day. `docs/plans/find-mode-two-speed-beacon.md` §9 has the
+table and the assumptions; Phase 0b of that plan exists precisely to replace
+them. Do not quote a number that has not been measured.
 
 The 6-byte frame takes the transmit burst from 230 ms to 140 ms, which is
 worth roughly another 90 ms of radio-on time per cycle — expect the ~39 h
@@ -298,10 +340,93 @@ WFE the core; `millis()` is tick-based and keeps counting correctly across
 suppressed ticks. No separate RTC timebase is needed.
 
 **Changing the ping interval requires changing the handheld with it.** In
-`handheld_ble/handheld_ble.ino`, `RX_TIMEOUT_MS` is derived from the
-**slowest** collar's period plus 200 ms, and `receive()` blocks for that long.
-Leave the window shorter than the slowest collar's period and roughly half of
-every one of its pings is dropped.
+`handheld_ble/handheld_ble.ino`, `COLLAR_SLOW_MS` must equal this file's
+`SLOW_INTERVAL_S`, and `COLLAR_PING_MS`/`RX_TIMEOUT_MS`/`STALE_MS` are all
+derived from it. Leave the receive window shorter than the slowest collar's
+period and most of its pings are dropped; leave `STALE_MS` at the old 15 s and
+every healthy cat reads as "lost" between pings.
+
+`__tests__/protocol.test.ts` in the app compares the two constants by reading
+both sources, so this cannot drift silently.
+
+## Find mode: the post-ping listen window
+
+A collar is a transmitter — it has no DIO0 wire and, until find mode, no receive
+code at all. Find mode adds a **120 ms receive window immediately after every
+ping**, and that is the whole downlink. The handheld has just decoded that ping,
+so it knows the collar is listening and can be transmitting a few milliseconds
+later; nothing has to be synchronised, and there is no continuous receive to
+pay for.
+
+One cycle:
+
+1. `radioInit()` (the radio was asleep, and sleep does not retain the modem
+   configuration).
+2. Transmit the ping.
+3. Arm RX continuous — four register writes, **no re-init**: `RegFifoRxBaseAddr`
+   = 0, `RegFifoAddrPtr` (0x0D) = 0, clear `REG_IRQ_FLAGS`, `RegOpMode = 0x85`.
+4. Poll `REG_IRQ_FLAGS` (0x12) every 1 ms until RxDone or the window closes.
+5. Sleep the radio, sleep the MCU until the next ping.
+
+### The window has to cover RxDone, not the preamble
+
+A 6-byte command with an 8-symbol preamble is **143 ms of air**, and the bench
+measured RxDone **148 ms** after the collar's own TxDone. So a 100 ms window cuts
+the packet in half and receives nothing — which looks exactly like a handheld
+that is not transmitting. The design is:
+
+- receive for `LISTEN_MS` = **120 ms**;
+- then keep receiving up to `MAX_CMD_RX_MS` = **300 ms** only while the
+  **ValidHeader** IRQ flag (bit `0x10`) is set. That flag only appears once a
+  real header has demodulated, so a quiet window costs exactly 120 ms. The header
+  completes at ~87 ms, leaving ~60 ms of margin.
+
+**Do not use `REG_MODEM_STAT` for this.** Measured: bit 2 reads set from the
+first poll of *every* window, including windows with nothing transmitted, so any
+mask containing it extends every window for nothing. `docs/plans/find-mode-bench-findings.md`
+§4 has the log.
+
+### What find mode does
+
+- On FIND_START: `findMode = true`, `findPingsLeft = minutes × 60 / FAST_INTERVAL_S`,
+  and a confirmation ping ~2 s later rather than after a whole slow interval.
+- It counts **pings**, not wall-clock time: drift-free, survives the tickless
+  sleep, and works on the ATtiny's inaccurate watchdog oscillator too.
+- The duration runs out by itself — no stop command is needed — and every ping
+  carries `flags` bit1 plus the minutes left in byte 5, which is the
+  acknowledgement the handheld waits for.
+- The per-collar 137 ms offset applies in **both** modes, so collars cannot lock
+  together while hunting.
+- Find mode listens after **every** ping in both modes. Listening only every
+  fifth find-mode ping saves ~0.26 mAh/day and breaks stop: the handheld retries
+  on three consecutive pings, and all three can miss the one window in five.
+- A collar with **no cell fitted or no divider** (which reads "no reading", not
+  0%) can still enter find mode. The gate is
+  `batteryValid && batteryPct < FIND_MIN_BATT_PCT`; gating on the percentage
+  alone locks out the bench board, silently.
+- After a reboot the collar is **slow**: find mode is not persisted. The app
+  re-requests it if the flags disappear while the minutes have not run out.
+
+### Driving it
+
+```bash
+# from the phone: the find button on that cat's row (per collar)
+# from the handheld's USB port, DTR low:
+python3 tools/serial_cmd.py "find 1 5"     # collar 1, 5 minutes
+python3 tools/serial_cmd.py "stop 1"
+# from the Mac over BLE, without the phone:
+python3 tools/ble_find.py --id 1 --minutes 5
+```
+
+`find` prints `waiting for ping`-equivalent states on the handheld too
+(`[find] sent` → `[find] acked`), because the command can only go out inside a
+window and the owner deserves to know that nothing has happened yet.
+
+### `v`, `V` and `w`
+
+`v` toggles logging, `V` forces it on and `w` forces it off — the last two so a
+bench script does not have to know the current state. Every print is gated on
+`logOk()`, which is "logging on **and** a host is mounted".
 
 ### Serial logging is off by default — press `v`
 
@@ -551,9 +676,16 @@ connected there — see "A board with no cell fitted" below. Note that the
 production build only samples the cell every 10 minutes, so the first reading
 takes that long to appear; build with `-DDEV_MODE` for a 5-second one.
 
-**6. Confirm it is transmitting.** `[TX] ping #N sent (id X, seq Y)` every
-eight seconds. If it says `TIMEOUT`, the radio never saw `TxDone` — a power
-or antenna problem rather than a wiring one.
+**6. Confirm it is transmitting.** A line every 60 s (or every 2 s in find
+mode) like:
+
+```
+[TX] ping #488 sent (id 1, seq 92, listened, slow 0)
+```
+
+`listened` means the post-ping receive window ran, and `slow 0` / `FIND Nmin`
+is the current mode. If it says `TIMEOUT`, the radio never saw `TxDone` — a
+power or antenna problem rather than a wiring one.
 
 **7. Check the other board can hear it.** Plug the handheld in and watch its
 serial: `[+] pkt #N id=X` for the matching id. This is the only step that
@@ -578,6 +710,30 @@ The collar supports two build modes — controlled by a compile-time flag:
 
 And every collar needs its own id — `-DCOLLAR_ID=0`, `1` or `2`. Flash each
 board with a different one and write the id on the enclosure.
+
+Find mode's two speeds are the same kind of compile-time flag, with production
+defaults, so an ordinary build needs neither:
+
+| Flag | Default | Note |
+|------|---------|------|
+| `SLOW_INTERVAL_S` | 60 | Must equal `COLLAR_SLOW_MS` in `handheld_ble/handheld_ble.ino` |
+| `FAST_INTERVAL_S` | 2 | Find-mode period |
+| `FIND_DURATION_MIN` | 15 | Used when a command's minutes byte is 0 |
+| `LISTEN_MS` | 120 | Receive window after each ping; must cover RxDone at ~148 ms |
+| `MAX_CMD_RX_MS` | 300 | Extension ceiling, only while ValidHeader is set |
+| `FIND_LISTEN_EVERY` | 1 | 1 = listen after every ping; see the stop-retry note above |
+| `FIND_MIN_BATT_PCT` | 10 | Refuses find mode below this, but only when the cell is actually readable |
+
+```bash
+# Bench build: a 10 s slow interval makes a find/stop cycle quick to test
+arduino-cli compile --fqbn "adafruit:nrf52:feather52840" \
+  --build-property "compiler.cpp.extra_flags=-DCOLLAR_ID=1 -DSLOW_INTERVAL_S=10" \
+  --output-dir /tmp/collar_bench collar/collar.ino
+```
+
+A bench build is a *different* `SLOW_INTERVAL_S` on the collar only - the
+handheld's window is sized from the production 60 s either way, so it still
+hears everything.
 
 ```bash
 # Production, collar 0 (id 0 is the default, so no flag is needed)
@@ -683,7 +839,7 @@ not by port name:
 
 | Board | Enumerates as | Prints |
 |-------|---------------|--------|
-| Collar | Adafruit Feather nRF52840 Express | `[TX] ping #N sent (id X, seq Y)` |
+| Collar | Adafruit Feather nRF52840 Express | `[TX] ping #N sent (id X, seq Y, listened, slow 0)` |
 | Handheld | ESP32 Family Device | `Cat Tracker - Handheld + BLE` |
 
 ### `Serial` needs TinyUSB
@@ -703,6 +859,19 @@ the firmware toggles the pins directly. Two consequences worth knowing:
   receiver fails with `RADIOLIB_ERR_LORA_HEADER_DAMAGED` (-24). The collar's
   `setRegBits()` mirrors RadioLib's `SPIsetRegValue()` semantics for this reason.
 
+## Troubleshooting: find mode does not engage
+
+Symptom: `[find] sent … ok` on the handheld, and nothing changes on the collar.
+
+| Check | How |
+|-------|-----|
+| Is the request even going out? | The handheld prints `[find] sent id=N …` on the ping, then `[find] acked` when the collar reports FIND_ACTIVE. No `sent` line means it never heard that collar. |
+| Is the collar's window open? | With `v` on the collar, `[TX] ping #… listened` marks a ping that had a window. Every 5th ping would mean `FIND_LISTEN_EVERY` got set above 1 - stop then fails 3 times in a row. |
+| Is the command preamble 8? | `t <id> <min> <preamble>` on the handheld A/Bs it without a reflash. 16/24/32 do not decode on this collar. |
+| Is the level sane? | Two RA-02s 20 cm apart overload each other: the collar saw -14 dBm from the handheld and decoded nothing, and -28 dBm from where it decoded everything. Keep test boards more than a metre apart. |
+| Did it enter and then leave? | `[find] START for N min = … pings` then `[find] duration elapsed` is normal expiry. Count the FIND pings: `minutes × 60 / FAST_INTERVAL_S`. |
+| Is the battery gate refusing it? | `[find] refused, battery N%` - only possible with a wired divider reading below `FIND_MIN_BATT_PCT`. A board with no cell reads "no reading" and is allowed. |
+
 ## Troubleshooting: handheld receives nothing
 
 Work down this list — it splits the problem in half at each step.
@@ -716,7 +885,7 @@ most informative test and takes 20 seconds.
 
 | Serial output | Meaning |
 |---------------|---------|
-| `[TX] ping #N sent (id X, seq Y)` | Board boots, SPI fine → problem is power or antenna |
+| `[TX] ping #N sent (id X, seq Y, …)` | Board boots, SPI fine → problem is power or antenna |
 | `SX1278 NOT detected` | Board boots but the radio does not answer on SPI — check the pads, see above |
 | Nothing at all | Not booting → power, or RESET (`031`) shorted |
 
@@ -771,7 +940,15 @@ with DTR low looks exactly like a dead board, right down to the silence.
 
 | Key | Action |
 |-----|--------|
-| `v` | Toggle verbose logging: TX status, battery, modem register readback |
+| `v` | Toggle verbose logging: TX status, battery, find state, register readback |
+| `V` | Logging **on**, idempotently - for bench scripts that cannot know the state |
+| `w` | Logging **off** |
+
+There is no collar-side command to enter find mode: the downlink exists, so use
+it (`find <id>` on the handheld, the phone's find button, or
+`tools/ble_find.py`). A collar that could jump into find mode from its own
+serial port would be able to do it on a cable, which is not a thing an owner can
+use on a cat.
 
 There is no BOOT button on this board. The firmware used to poll Arduino pin 0
 for one, but pin 0 is P0.11 — which is SCK — so reading it as a button input
@@ -810,12 +987,16 @@ suspecting the firmware.
 ## Output
 
 ```
-[TX] ping #488 sent (id 1, seq 92)
+[TX] ping #488 sent (id 1, seq 92, listened, FIND 14min)
 ```
 
-The `v` command also prints the collar's id, its ping period and the chip's
-factory `DEVICEID`, so a physical collar can be told apart from its
-neighbours after flashing.
+The `v` command also prints the collar's id, both ping periods, the current
+find state, the listen window and the chip's factory `DEVICEID`, so a physical
+collar can be told apart from its neighbours after flashing.
+
+`[BATT]` is printed when the cell is sampled (every 10 minutes in production),
+and `[find] START` / `[find] STOP` / `[find] duration elapsed` mark the moments
+find mode changes.
 
 The packet itself is the six-byte frame described in "Packet format" — no
 ASCII, no CRC of our own, and the id that says which cat it is.

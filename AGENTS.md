@@ -130,6 +130,50 @@ number and ignore the function label.
   a missing header is a build failure, not a flash failure. A device missing from
   the dashboard means its YAML is not in that directory, not that the board is
   offline.
+- **Find mode is the only downlink, and it lives in a 120 ms window after each
+  ping.** The collar transmits, then arms RX continuous for `LISTEN_MS` (120 ms),
+  polling `REG_IRQ_FLAGS` over the bit-banged SPI bus because the RA-02 there has
+  **no DIO0 wire**. The window is extended to `MAX_CMD_RX_MS` (300 ms) only while
+  the **ValidHeader** IRQ flag (0x10) is set. Two numbers are load-bearing and
+  were both wrong in the first draft of the plan: a 6-byte command occupies
+  143 ms of air and RxDone lands **148 ms** after the collar's TxDone, so a
+  100 ms window receives nothing at all; and `REG_MODEM_STAT` bit 2 reads set in
+  *every* window, so any mask containing it extends every window for nothing.
+  See `docs/plans/find-mode-bench-findings.md`.
+- **The command preamble must equal the collar's preamble, which is 8.** A collar
+  whose `RegPreambleLsb` is 8 decodes an 8-symbol command and **nothing** at 16,
+  24 or 32. A longer preamble is not insurance, it is a silent failure that
+  looks exactly like a handheld which is not transmitting. If a longer one is
+  ever wanted, the collar must write the same value to `REG_PREAMBLE` before
+  arming RX, and both ends must be re-tested.
+- **Find mode counts pings, not seconds, and is per collar.** The duration is
+  `minutes × 60 / FAST_INTERVAL_S` pings, counted down one per ping, so it
+  survives tickless sleep and the ATtiny's 7-10 s watchdog. Each collar's find
+  state is independent: a request is held by the handheld and only transmitted
+  in that collar's own window, and the acknowledgement is that collar's ping
+  with `flags` bit 1 set. Nothing engages find mode by itself, and a reboot
+  always returns to the slow interval.
+- **Listen in both modes after every ping (`FIND_LISTEN_EVERY` = 1).** Listening
+  every fifth find-mode ping saves ~0.26 mAh/day and breaks `stop`: the handheld
+  retries on three consecutive pings and all three can miss the one window in
+  five, which leaves a collar shouting for 15 minutes.
+- **`SLOW_INTERVAL_S` in `collar/collar.ino` must equal `COLLAR_SLOW_MS` in
+  `handheld_ble/handheld_ble.ino`.** The handheld derives `COLLAR_PING_MS`,
+  `RX_TIMEOUT_MS` and `STALE_MS` from it; get it wrong and the handheld is deaf
+  for most of every cycle, or every healthy cat reads "lost". The app's
+  `__tests__/protocol.test.ts` compares the two sources, so it cannot drift
+  quietly.
+- **A collar with no cell fitted or no divider must still enter find mode.** It
+  reports "no reading", not 0%, so the gate is
+  `batteryValid && batteryPct < FIND_MIN_BATT_PCT`. Gating on the percentage
+  alone locks out the bench board, silently.
+- **Two RA-02s closer than about a metre overload each other, and only in one
+  direction.** At 20-30 cm the collar saw -14 dBm from the handheld and decoded
+  nothing while the handheld decoded the collar fine at -35 dBm. A nearby
+  transmitter that cannot be heard is usually flooding the receiver, not broken.
+- **`tools/ble_find.py` is the phone's find button without the phone**, and it
+  and `tools/ble_roster.py` both need the handheld's BLE link - which the phone
+  holds while the app is connected, so run them with the app disconnected.
 - **Each collar is flashed with its own id** (`-DCOLLAR_ID=0|1|2`). Two
   collars with the same id are invisible as separate cats. `arduino-cli
   compile` has to run before each `upload`, because the id is baked into the

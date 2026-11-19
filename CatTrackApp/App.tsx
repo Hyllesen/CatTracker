@@ -40,10 +40,12 @@ import {
   sendFindCommand,
 } from './src/ble';
 import {
+  BATTERY_SAMPLE_MINUTES,
   Collar,
   MAX_COLLARS,
   Roster,
   pickLeader,
+  snrColor,
   toneStepFor,
 } from './src/signal';
 import {CatNames, defaultName, loadNames, nameFor, saveName} from './src/cats';
@@ -56,26 +58,13 @@ import {
   findToggle,
 } from './src/find';
 import {
-  addMarker,
-  addSample,
-  elapsedSeconds,
-  exportCsv,
-  isRecording,
-  rowCount,
-  startRecording,
-  stopRecording,
-} from './src/logging';
-import {
   playToneStep,
   prepareTones,
   releaseTones,
-  setTonesEnabled,
-  tonesEnabled,
 } from './src/tone';
 
 /** Preset distance waypoints. Labels are written into the CSV next to each
  *  marker so the exported file is self-describing on its own. */
-const MARKERS = ['5m', '10m', '25m', '50m', '100m', 'clear'];
 
 /**
  * Android 12+ grants BLE scanning via BLUETOOTH_SCAN, which the manifest
@@ -287,20 +276,14 @@ function CollarRow({
   findKind: FindKind;
   onToggleFind: () => void;
 }) {
-  const detail: string[] = [];
-  if (collar.have) {
-    detail.push(
-      collar.batteryPercent === null
-        ? 'batt --'
-        : `batt ${collar.batteryPercent}%`,
-    );
-    detail.push(`${collar.ageSeconds}s ago`);
-  }
-
   // Same rule as the big reading: a lost collar goes red whatever its last
   // signal was, because a green number would say "the cat is here" when the
   // cat stopped answering.
   const tone = collar.stale ? '#e74c3c' : signalColor(collar.percent);
+  // The SNR keeps its own colour: it is a reading of the same packet, not a
+  // copy of the dBm one, and a strong-but-dirty signal is a real state where
+  // the two disagree.
+  const snrTone = collar.stale ? '#5d6d7e' : snrColor(collar.snr);
 
   return (
     <Pressable
@@ -371,14 +354,35 @@ function CollarRow({
           {collar.rssi === null ? '--' : collar.rssi.toFixed(1)}
         </Text>
         <Text style={styles.rowDbmUnit}>dBm</Text>
-        <Text style={styles.rowSnr}>
+        <Text style={[styles.rowSnr, {color: snrTone}]}>
           {collar.snr === null ? '--' : collar.snr.toFixed(1)}
         </Text>
         <Text style={styles.rowSnrUnit}>dB snr</Text>
+        {/* The age belongs with the readings it ages: it is the third number
+            about the same packet, not a footnote about the battery. */}
+        {collar.have ? (
+          <Text style={styles.rowAge}>{collar.ageSeconds}s ago</Text>
+        ) : null}
       </View>
-      <Text style={styles.rowDetail}>
-        {detail.length ? detail.join(' · ') : 'not heard yet'}
-      </Text>
+      {/* The battery gets its own line, and says how stale it can be: the
+          collar samples the cell every ten minutes and every ping carries that
+          sample, so this number is always older than the one above it. */}
+      {collar.have ? (
+        <Text style={styles.rowDetail}>
+          <Text style={styles.rowBatt}>
+            {collar.batteryPercent === null
+              ? 'batt --'
+              : `batt ${collar.batteryPercent}%`}
+          </Text>
+          <Text style={styles.rowBattNote}>
+            {collar.batteryPercent === null
+              ? '  no divider fitted'
+              : `  ${BATTERY_SAMPLE_MINUTES}-min sample`}
+          </Text>
+        </Text>
+      ) : (
+        <Text style={styles.rowDetail}>not heard yet</Text>
+      )}
     </Pressable>
   );
 }
@@ -390,9 +394,6 @@ function Tracker() {
   const [names, setNames] = useState<CatNames>({});
   const [error, setError] = useState<string | null>(null);
   const [seen, setSeen] = useState<ScanResult['seen']>([]);
-  const [toneOn, setToneOn] = useState(tonesEnabled());
-  const [rec, setRec] = useState({on: false, rows: 0, secs: 0});
-  const [csvNote, setCsvNote] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<number | null>(null);
   // Find requests this app made, per collar. Only used for the "waiting" and
   // "failed" wording and for the countdown: the authority on what a collar is
@@ -490,11 +491,7 @@ function Tracker() {
       timing.last = now;
       timingRef.current[c.id] = timing;
 
-      // Fire-and-forget: a logging failure must never delay the tone or
-      // stall the BLE notification stream.
-      addSample(c);
     }
-    setRec(r2 => (r2.on ? {...r2, rows: rowCount()} : r2));
 
     // Tone policy: only the cat you are following beeps.
     //
@@ -620,50 +617,6 @@ function Tracker() {
     }, 200);
     return () => clearInterval(id);
   }, [status]);
-
-  const toggleTones = useCallback(() => {
-    const next = !tonesEnabled();
-    setTonesEnabled(next);
-    setToneOn(next);
-  }, []);
-
-  const toggleRecording = useCallback(async () => {
-    if (isRecording()) {
-      await stopRecording();
-      setRec(r => ({on: false, rows: r.rows, secs: 0}));
-      setCsvNote('Saved. Export when you are done walking.');
-      return;
-    }
-    await startRecording();
-    setCsvNote(null);
-    setRec({on: true, rows: 0, secs: 0});
-  }, []);
-
-  // Elapsed time only needs to tick while recording; driving it from the
-  // notification stream would leave it frozen whenever the signal drops out.
-  useEffect(() => {
-    if (!rec.on) {
-      return;
-    }
-    const id = setInterval(() => {
-      setRec(r => (r.on ? {...r, secs: elapsedSeconds()} : r));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [rec.on]);
-
-  const mark = useCallback(async (label: string) => {
-    await addMarker(label);
-    setRec(r => ({...r, rows: rowCount()}));
-  }, []);
-
-  const doExport = useCallback(async () => {
-    try {
-      const file = await exportCsv();
-      setCsvNote(`Exported ${file.split('/').pop()}`);
-    } catch (e) {
-      setCsvNote(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
 
   const openRename = useCallback(
     (id: number) => {
@@ -796,7 +749,7 @@ function Tracker() {
           <Text style={[styles.headline, {color: head.tone}]}>{head.text}</Text>
           <Text style={[styles.headlineUnit, {color: head.tone}]}>dBm</Text>
           {head.snr !== null ? (
-            <Text style={styles.headlineSnr}>
+            <Text style={[styles.headlineSnr, {color: snrColor(head.snr)}]}>
               {`snr ${head.snr.toFixed(1)} dB`}
             </Text>
           ) : null}
@@ -852,49 +805,6 @@ function Tracker() {
           accessibilityLabel="Disconnect">
           <Text style={styles.buttonText}>Disconnect</Text>
         </Pressable>
-      </View>
-
-      <Pressable
-        style={[styles.toneToggle, toneOn ? null : styles.toneToggleOff]}
-        onPress={toggleTones}
-        accessibilityRole="button"
-        accessibilityLabel={toneOn ? 'Mute tones' : 'Unmute tones'}>
-        <Text style={styles.toneToggleText}>
-          {toneOn ? 'Tone on' : 'Tone muted'}
-        </Text>
-      </Pressable>
-
-      <View style={styles.recBox}>
-        <Pressable
-          style={[styles.recButton, rec.on ? styles.recButtonOn : null]}
-          onPress={toggleRecording}>
-          <Text style={styles.buttonText}>
-            {rec.on ? 'Stop recording' : 'Record range test'}
-          </Text>
-        </Pressable>
-        {rec.on && (
-          <>
-            <Text style={styles.recStatus}>
-              {rec.rows} rows · {rec.secs}s
-            </Text>
-            <View style={styles.markerRow}>
-              {MARKERS.map(m => (
-                <Pressable
-                  key={m}
-                  style={styles.markerButton}
-                  onPress={() => mark(m)}>
-                  <Text style={styles.markerText}>{m}</Text>
-                </Pressable>
-              ))}
-            </View>
-          </>
-        )}
-        {!rec.on && rec.rows > 0 && (
-          <Pressable style={styles.exportButton} onPress={doExport}>
-            <Text style={styles.buttonText}>Export CSV ({rec.rows} rows)</Text>
-          </Pressable>
-        )}
-        {csvNote && <Text style={styles.recNote}>{csvNote}</Text>}
       </View>
 
       <Modal
@@ -1095,11 +1005,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: 5,
   },
+  rowAge: {
+    color: '#7f8c8d',
+    fontSize: 12,
+    marginLeft: 'auto',
+    fontVariant: ['tabular-nums'],
+  },
   rowDetail: {
     color: '#5d6d7e',
     fontSize: 11,
     marginTop: 6,
     fontVariant: ['tabular-nums'],
+  },
+  // The battery is a real reading, not a footnote, so it is bold and white -
+  // and the note beside it says how old it can be, because the collar samples
+  // the cell every ten minutes while it pings every sixty seconds.
+  rowBatt: {
+    color: '#ecf0f1',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  rowBattNote: {
+    color: '#5d6d7e',
+    fontSize: 11,
   },
   headlineRow: {
     flexDirection: 'row',
@@ -1177,70 +1105,6 @@ const styles = StyleSheet.create({
   buttonText: {
     color: '#fff',
     fontWeight: '600',
-  },
-  toneToggle: {
-    marginTop: 10,
-    paddingVertical: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-    backgroundColor: '#1f6f4a',
-  },
-  toneToggleOff: {
-    backgroundColor: '#3a2a2a',
-  },
-  toneToggleText: {
-    color: '#ecf0f1',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  recBox: {
-    marginTop: 10,
-  },
-  recButton: {
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    backgroundColor: '#2c3e50',
-  },
-  recButtonOn: {
-    backgroundColor: '#c0392b',
-  },
-  recStatus: {
-    color: '#7f8c8d',
-    fontSize: 12,
-    textAlign: 'center',
-    marginTop: 8,
-  },
-  markerRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    marginTop: 8,
-  },
-  markerButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    margin: 3,
-    borderRadius: 6,
-    backgroundColor: '#1f6f4a',
-  },
-  markerText: {
-    color: '#ecf0f1',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  exportButton: {
-    marginTop: 8,
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    backgroundColor: '#2471a3',
-  },
-  recNote: {
-    color: '#5d6d7e',
-    fontSize: 11,
-    textAlign: 'center',
-    marginTop: 6,
   },
   beepWaiting: {
     color: '#5d6d7e',
