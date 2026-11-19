@@ -131,9 +131,16 @@ const uint8_t REG_PA_CONFIG          = 0x09;
 const uint8_t REG_OCP                = 0x0B;
 const uint8_t REG_LNA                = 0x0C;
 const uint8_t REG_FIFO_TX_BASE_ADDR  = 0x0E;
+const uint8_t REG_FIFO_RX_BASE_ADDR  = 0x0F;   // where the modem writes RX data
+const uint8_t REG_FIFO_RX_CURR_ADDR  = 0x10;   // where the last packet starts
+// 0x0D is RegFifoAddrPtr (the read/write cursor), not a "tx current address";
+// the old name is kept because sendPacket() uses it and a rename here would
+// hide that the transmit and receive paths share it.
 const uint8_t REG_FIFO_TX_CURR_ADDR  = 0x0D;
+const uint8_t REG_FIFO_ADDR_PTR      = 0x0D;
 const uint8_t REG_IRQ_FLAGS_MASK     = 0x11;
 const uint8_t REG_IRQ_FLAGS          = 0x12;
+const uint8_t REG_RX_NB_BYTES        = 0x13;
 const uint8_t REG_MODEM_CONFIG_1     = 0x1D;
 const uint8_t REG_MODEM_CONFIG_2     = 0x1E;
 const uint8_t REG_MODEM_CONFIG_3     = 0x26;
@@ -201,12 +208,107 @@ const uint32_t PING_INTERVAL_MS = 8000;
 // 137 ms is deliberately not a round number and not a divisor of the
 // interval: it keeps the three periods from re-aligning on a short cycle.
 const uint32_t PING_PERIOD_STEP_MS = 137;
-const uint32_t COLLAR_PERIOD_MS = PING_INTERVAL_MS + COLLAR_ID * PING_PERIOD_STEP_MS;
+
+// ---------------------------------------------------------------------------
+// Find mode - two speeds (Phase 1)
+// ---------------------------------------------------------------------------
+// Normal mode pings slowly; find mode pings fast for a limited time, then
+// reverts by itself. The owner starts it from the phone (or the handheld's
+// serial port), the handheld delivers a command in the listen window described
+// below, and the collar acknowledges by setting FIND_ACTIVE in its pings - the
+// handheld does not need a separate ack.
+//
+// Why 60 s and not 8 s: the radio's transmit dominates the budget, and 8 s
+// measured ~3 days on a 180 mAh cell. See docs/plans/find-mode-two-speed-
+// beacon.md §9 for the table; 60 s is ~11 days if a hunt runs at 2 s.
+//
+// The duration is counted in PINGS, not wall-clock time. It is drift-free,
+// survives the tickless sleep, and the ATtiny build needs the same trick
+// because its watchdog oscillator runs 7-10 s for a nominal 8 s.
+#ifndef SLOW_INTERVAL_S
+#define SLOW_INTERVAL_S 60
+#endif
+#ifndef FAST_INTERVAL_S
+#define FAST_INTERVAL_S 2
+#endif
+#ifndef FIND_DURATION_MIN
+#define FIND_DURATION_MIN 15
+#endif
+// Listen after every ping, in both modes. The original plan listened only every
+// fifth find-mode ping to save current, but the arithmetic says the saving is
+// ~0.26 mAh/day while the cost is a real failure mode: the handheld retries on
+// three consecutive pings, and if only every fifth one has a window the retries
+// can all land outside it. 'stop' then fails 3/3 and the owner is left hunting
+// a cat with a collar that will keep shouting for 15 minutes. Listening every
+// cycle costs 1.3 mAs per 2 s (~0.66 mA) against ~9 mA of transmit.
+#ifndef FIND_LISTEN_EVERY
+#define FIND_LISTEN_EVERY 1
+#endif
+// A collar with no cell fitted (or no divider) reads "no reading", not 0%, and
+// must still be able to enter find mode - that is exactly the bench board.
+// So the gate below tests batteryValid as well as the percentage.
+#ifndef FIND_MIN_BATT_PCT
+#define FIND_MIN_BATT_PCT 10
+#endif
+
+// The receive window that follows every ping.
+//
+// MUST cover RxDone, not merely the preamble. A 6-byte command with the same
+// 8-symbol preamble as a ping occupies 143 ms of air, and the bench measured
+// RxDone 148 ms after this collar's TxDone (find-mode-bench-findings.md §8). A
+// 100 ms window cuts the packet in half and receives nothing at all, which
+// looks exactly like a handheld that is not transmitting.
+#ifndef LISTEN_MS
+#define LISTEN_MS 120
+#endif
+// Extension ceiling, entered only after the ValidHeader flag appears. That flag
+// cannot be raised by an empty channel, unlike REG_MODEM_STAT bit 2, which the
+// bench measured as set from the first poll of EVERY window (so every mask
+// containing it extends every window for nothing).
+#ifndef MAX_CMD_RX_MS
+#define MAX_CMD_RX_MS 300
+#endif
+
+// Transmitter address of the handheld's command frame. A ping is 0xC1, so the
+// two directions can never be confused.
+const uint8_t CMD_MAGIC       = 0xC2;
+const uint8_t CMD_LEN         = 6;
+const uint8_t CMD_FIND_START  = 0x01;
+const uint8_t CMD_FIND_STOP   = 0x02;
+
+bool     findMode      = false;
+uint16_t findPingsLeft = 0;      // counted down once per ping
+uint8_t  cmdSeqLast    = 0;      // last accepted command's sequence, for logs
+uint32_t cmdCount      = 0;      // commands accepted since boot
+
+// The ping period: fast in find mode, slow otherwise, plus the per-collar
+// offset in BOTH modes so collars cannot lock together while they are hunting.
+uint32_t periodMs() {
+  uint32_t base = (findMode ? (uint32_t)FAST_INTERVAL_S : (uint32_t)SLOW_INTERVAL_S) * 1000UL;
+  return base + COLLAR_ID * PING_PERIOD_STEP_MS;
+}
+
+// Minutes of find mode left, for byte 5 of the ping: ceil(pings * interval / 60),
+// saturated at 255 and 0 when find mode is off so nothing downstream reads a
+// stale number.
+uint8_t minutesLeft() {
+  if (!findMode || findPingsLeft == 0) return 0;
+  uint32_t secs = (uint32_t)findPingsLeft * FAST_INTERVAL_S;
+  uint32_t mins = (secs + 59) / 60;
+  return mins > 255 ? 255 : (uint8_t)mins;
+}
 
 // How long loop() sleeps in one go before servicing the serial port. Long
 // enough that tick suppression actually saves power, short enough that a
 // 'v' typed at the bench is answered promptly.
 const uint32_t IDLE_SLICE_MS = 250;
+
+// IRQ flag bits (REG_IRQ_FLAGS, 0x12). RxDone and PayloadCrcError are set
+// together for a corrupted frame; ValidHeader is the only flag that means
+// "a real packet is arriving right now".
+const uint8_t IRQ_RX_DONE      = 0x40;
+const uint8_t IRQ_CRC_ERROR    = 0x20;
+const uint8_t IRQ_VALID_HEADER = 0x10;
 
 // ---------------------------------------------------------------------------
 // Battery sense
@@ -339,6 +441,9 @@ uint8_t readBatteryPercent() {
 const uint8_t FRAME_MAGIC = 0xC1;
 const uint8_t FRAME_LEN   = 6;
 const uint8_t FLAG_LOW_BATT = 0x01;
+// bit1: find mode is active, i.e. this ping is a find-mode ping and the collar
+// is listening every FIND_LISTEN_EVERY-th cycle. Byte 5 carries minutes left.
+const uint8_t FLAG_FIND     = 0x02;
 
 // Battery reading carried in the frame. 0xFF means "no reading", which is
 // what the collar sends until the battery divider is wired to pin 029.
@@ -353,8 +458,11 @@ void buildFrame(uint8_t* out) {
   out[1] = seqCounter++;
   out[2] = COLLAR_ID;
   out[3] = batteryValid ? batteryPct : BATT_UNKNOWN;
-  out[4] = (batteryValid && batteryPct < 15) ? FLAG_LOW_BATT : 0x00;
-  out[5] = 0x00;
+  uint8_t flags = 0;
+  if (batteryValid && batteryPct < 15) flags |= FLAG_LOW_BATT;
+  if (findMode) flags |= FLAG_FIND;
+  out[4] = flags;
+  out[5] = minutesLeft();
 }
 
 // Read-modify-write of bits [startBit..endBit] in a register. RadioLib writes
@@ -519,13 +627,145 @@ uint32_t lastPingMs = 0;
 // physically possible.
 static bool verboseLog = false;
 
+// How many pings have been sent since boot. Used for the find-mode listen
+// policy (every FIND_LISTEN_EVERY-th ping) and nothing else.
+uint32_t pingCount = 0;
+
+// ---------------------------------------------------------------------------
+// The post-ping receive window
+// ---------------------------------------------------------------------------
+// Arm RX continuous. Four writes and no re-init: radioInit() costs ~35 writes
+// plus three 1 ms delays, and radioSleep() does not retain the FIFO pointers,
+// so both the base and the cursor are reset here. The flags are cleared so a
+// stale ValidHeader (or the TxDone we just consumed) cannot extend a window
+// that has nothing in it.
+void armRx() {
+  writeReg(REG_IRQ_FLAGS, 0xFF);
+  writeReg(REG_FIFO_RX_BASE_ADDR, 0x00);
+  writeReg(REG_FIFO_ADDR_PTR, 0x00);
+  writeReg(REG_OP_MODE, 0x80 | 0x05);   // LoRa | RX continuous
+}
+
+// Set when a FIND_START is accepted, so the confirmation ping goes out ~2 s
+// later instead of after a whole slow interval. Handled at the end of the ping
+// cycle, because that is where lastPingMs is rebased.
+bool wantQuickPing = false;
+
+// Apply one accepted command frame. `buf` is CMD_LEN bytes, magic and id
+// already checked. Returns true if the command was acted on.
+bool applyCommand(const uint8_t* buf) {
+  const uint8_t cmd   = buf[2];
+  const uint8_t param = buf[3];
+
+  if (cmd == CMD_FIND_START) {
+    // A collar with no divider or no cell reports "no reading", not 0%, and
+    // must still enter find mode - hence batteryValid in the condition. Gating
+    // on the percentage alone locks the bench board out silently.
+    if (batteryValid && batteryPct < FIND_MIN_BATT_PCT) {
+      if (logOk()) {
+        Serial.print(F("[find] refused, battery "));
+        Serial.print(batteryPct);
+        Serial.println(F("%"));
+      }
+      return false;
+    }
+    uint8_t minutes = param ? param : FIND_DURATION_MIN;
+    uint32_t pings = (uint32_t)minutes * 60UL / FAST_INTERVAL_S;
+    if (pings == 0) pings = 1;
+    if (pings > 65535UL) pings = 65535UL;
+    findMode = true;
+    findPingsLeft = (uint16_t)pings;
+    wantQuickPing = true;
+    cmdSeqLast = buf[4];
+    cmdCount++;
+    if (logOk()) {
+      Serial.print(F("[find] START for "));
+      Serial.print(minutes);
+      Serial.print(F(" min = "));
+      Serial.print(pings);
+      Serial.print(F(" pings at "));
+      Serial.print(FAST_INTERVAL_S);
+      Serial.print(F(" s (seq "));
+      Serial.print(buf[4]);
+      Serial.println(F(")"));
+    }
+    return true;
+  }
+
+  if (cmd == CMD_FIND_STOP) {
+    bool was = findMode;
+    findMode = false;
+    findPingsLeft = 0;
+    cmdSeqLast = buf[4];
+    cmdCount++;
+    if (logOk()) {
+      Serial.print(F("[find] STOP"));
+      Serial.println(was ? F("") : F(" (was not in find mode)"));
+    }
+    return true;
+  }
+
+  return false;
+}
+
+// Listen for exactly one command frame inside the window after a ping.
+// Returns true if a command was accepted. Leaves the radio in standby; the
+// caller puts it to sleep.
+bool listenForCommand() {
+  armRx();
+
+  uint32_t deadline = millis() + LISTEN_MS;
+  bool     extended = false;
+
+  for (;;) {
+    uint8_t irq = readReg(REG_IRQ_FLAGS);
+
+    if (irq & IRQ_RX_DONE) {
+      bool crcError = (irq & IRQ_CRC_ERROR) != 0;
+      uint8_t n = readReg(REG_RX_NB_BYTES);
+      if (n > CMD_LEN) n = CMD_LEN;
+      writeReg(REG_FIFO_ADDR_PTR, readReg(REG_FIFO_RX_CURR_ADDR));
+      uint8_t buf[CMD_LEN] = { 0, 0, 0, 0, 0, 0 };
+      for (uint8_t i = 0; i < n; i++) buf[i] = readReg(REG_FIFO);
+      writeReg(REG_OP_MODE, 0x80 | 0x01);        // standby
+      if (crcError) return false;
+      if (n != CMD_LEN) return false;
+      if (buf[0] != CMD_MAGIC) return false;
+      if (buf[1] != COLLAR_ID) return false;
+      return applyCommand(buf);
+    }
+
+    // A real header has demodulated, so a packet is genuinely arriving. Stay in
+    // receive until RxDone: the window would otherwise close at LISTEN_MS,
+    // ~60 ms before the packet ends, and the payload would be lost.
+    if (!extended && (irq & IRQ_VALID_HEADER)) {
+      extended = true;
+      deadline = millis() + MAX_CMD_RX_MS;
+    }
+
+    if ((int32_t)(millis() - deadline) >= 0) break;
+    delay(1);
+  }
+
+  return false;
+}
+
+// Normal mode listens after every ping: the window is ~18 uA average at a 60 s
+// interval, which is not worth saving. Find mode listens every
+// FIND_LISTEN_EVERY-th ping so FIND_STOP can still arrive without paying the
+// receive cost on every 2 s cycle.
+bool shouldListen() {
+  if (!findMode) return true;
+  return (pingCount % FIND_LISTEN_EVERY) == 0;
+}
+
+
 bool sx1278Present = false;
 uint8_t regVersion = 0;
 
 bool logOk() {
   return verboseLog && TinyUSBDevice.mounted();
 }
-uint32_t pingCount  = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -593,14 +833,29 @@ void printConfig() {
   Serial.print(SYNC_WORD, HEX);
   Serial.println();
   Serial.print(F("Pinging every "));
-  Serial.print(COLLAR_PERIOD_MS / 1000);
-  Serial.print(F("."));
-  Serial.print((COLLAR_PERIOD_MS % 1000) / 100);
-  Serial.print(F("s (id "));
+  Serial.print(SLOW_INTERVAL_S);
+  Serial.print(F("s slow / "));
+  Serial.print(FAST_INTERVAL_S);
+  Serial.print(F("s in find mode (id "));
   Serial.print(COLLAR_ID);
   Serial.print(F(" of "));
   Serial.print(MAX_COLLARS);
   Serial.println(F(")"));
+  Serial.print(F("Find mode: "));
+  if (findMode) {
+    Serial.print(F("ACTIVE, "));
+    Serial.print(findPingsLeft);
+    Serial.print(F(" pings / "));
+    Serial.print(minutesLeft());
+    Serial.println(F(" min left"));
+  } else {
+    Serial.println(F("idle"));
+  }
+  Serial.print(F("Listen window "));
+  Serial.print(LISTEN_MS);
+  Serial.print(F(" ms, extend to "));
+  Serial.print(MAX_CMD_RX_MS);
+  Serial.println(F(" ms on ValidHeader"));
 
   // The factory device id is printed so a physical collar can be identified
   // after flashing - "I just flashed Miso's collar, not the spare" is a
@@ -623,17 +878,21 @@ void loop() {
   // diagnostics on over the very cable that is supplying power.
   while (Serial.available()) {
     char c = (char)Serial.read();
-    if ((c == 'v' || c == 'V') && TinyUSBDevice.mounted()) {
+    if (!TinyUSBDevice.mounted()) continue;
+    if (c == 'V') {              // idempotent ON, for bench scripts
+      verboseLog = true;
+      printConfig();
+    } else if (c == 'w' || c == 'W') {
+      verboseLog = false;
+    } else if (c == 'v') {
       verboseLog = !verboseLog;
-      if (verboseLog) {
-        printConfig();
-      }
+      if (verboseLog) printConfig();
     }
   }
 
   // (no manual-ping button: the board has none, and pin 0 is SCK)
 
-  if (millis() - lastPingMs >= COLLAR_PERIOD_MS) {
+  if (millis() - lastPingMs >= periodMs()) {
     pingCount++;
 
     // Sample the cell on its own much slower schedule than the pings. The
@@ -669,7 +928,16 @@ void loop() {
     uint8_t frame[FRAME_LEN];
     buildFrame(frame);
     bool ok = sendPacket(frame, FRAME_LEN);
+
+    // Listen for a command in the window that opens the instant the ping ends.
+    // The handheld is already decoding that ping, so it can be transmitting
+    // ~4 ms later; the window has to stay open until RxDone (~148 ms).
+    bool accepted = false;
+    if (shouldListen()) {
+      accepted = listenForCommand();
+    }
     radioSleep();
+
     if (logOk()) {
       Serial.print(F("[TX] ping #"));
       Serial.print(pingCount);
@@ -677,9 +945,36 @@ void loop() {
       Serial.print(COLLAR_ID);
       Serial.print(F(", seq "));
       Serial.print(seqCounter - 1);
-      Serial.println(ok ? F(")") : F(" TIMEOUT)"));
+      if (shouldListen()) {
+        Serial.print(F(", listened"));
+        if (accepted) Serial.print(F(", cmd"));
+      }
+      Serial.print(findMode ? F(", FIND ") : F(", slow "));
+      Serial.print(findMode ? minutesLeft() : 0);
+      Serial.print(findMode ? F("min)") : F(")"));
+      if (!ok) Serial.print(F(" TX TIMEOUT"));
+      Serial.println();
     }
+
+    // Count the find-mode duration down in PINGS, after the ping that carried
+    // the current minutes-left value. Drift-free and independent of whether the
+    // interval was slow or fast.
+    if (findMode) {
+      if (findPingsLeft > 0) findPingsLeft--;
+      if (findPingsLeft == 0) {
+        findMode = false;
+        if (logOk()) Serial.println(F("[find] duration elapsed, back to slow"));
+      }
+    }
+
     lastPingMs = millis();
+    // FIND_START asked for a quick confirmation ping, and LASTPINGMS was just
+    // rebased: pull it back so the next ping goes out ~2 s from now.
+    if (wantQuickPing) {
+      wantQuickPing = false;
+      uint32_t p = periodMs();
+      if (p > 2000) lastPingMs = millis() - (p - 2000);
+    }
   }
 
   // Sleep until the next ping is due.
@@ -697,19 +992,23 @@ void loop() {
   // Sleeping in slices rather than one long delay keeps serial responsive:
   // a 'v' arriving mid-interval is picked up within IDLE_SLICE_MS.
   if (!sx1278Present) {
-    delay(COLLAR_PERIOD_MS);
+    delay(periodMs());
     return;
   }
-  while (millis() - lastPingMs < COLLAR_PERIOD_MS) {
-    uint32_t remaining = COLLAR_PERIOD_MS - (millis() - lastPingMs);
+  while (millis() - lastPingMs < periodMs()) {
+    uint32_t remaining = periodMs() - (millis() - lastPingMs);
     delay(remaining < IDLE_SLICE_MS ? remaining : IDLE_SLICE_MS);
     while (Serial.available()) {
       char c = (char)Serial.read();
-      if ((c == 'v' || c == 'V') && TinyUSBDevice.mounted()) {
+      if (!TinyUSBDevice.mounted()) continue;
+      if (c == 'V') {
+        verboseLog = true;
+        printConfig();
+      } else if (c == 'w' || c == 'W') {
+        verboseLog = false;
+      } else if (c == 'v') {
         verboseLog = !verboseLog;
-        if (verboseLog) {
-          printConfig();
-        }
+        if (verboseLog) printConfig();
       }
     }
   }

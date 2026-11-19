@@ -41,6 +41,12 @@ const uint16_t PREAMBLE   = 8;
 // Three is the most the roster format can carry: see ROSTER_MAX_LEN.
 const uint8_t MAX_COLLARS = 3;
 
+// SLOW_INTERVAL_S in collar/collar.ino. The collar's slow period is its worst
+// case (find mode only makes it faster), so both the receive window and the
+// staleness window are sized from it. Change one, change the other - these two
+// boards are coupled, exactly like the air settings.
+const uint32_t COLLAR_SLOW_MS = 60000;
+
 // ---------------------------------------------------------------------------
 // Collar packet format - MUST match collar/collar.ino
 // ---------------------------------------------------------------------------
@@ -59,7 +65,54 @@ const uint8_t MAX_COLLARS = 3;
 const uint8_t FRAME_MAGIC        = 0xC1;
 const uint8_t FRAME_LEN          = 6;
 const uint8_t FRAME_FLAG_LOW_BATT = 0x01;
+const uint8_t FRAME_FLAG_FIND     = 0x02;   // collar is in find mode
 const uint8_t BATT_UNKNOWN       = 0xFF;
+
+// ---------------------------------------------------------------------------
+// Downlink command frame - MUST match collar/collar.ino (Phase 1)
+// ---------------------------------------------------------------------------
+// Six bytes, the same size as a ping because at SF9 five and six bytes cost the
+// same airtime:
+//
+//   byte 0   0xC2        magic - a ping is 0xC1, so the two never collide
+//   byte 1   target id
+//   byte 2   command     0x01 FIND_START, 0x02 FIND_STOP
+//   byte 3   parameter   minutes for FIND_START (0 = collar's own default)
+//   byte 4   command seq, for logs
+//   byte 5   reserved 0
+//
+// Phase 0a uses FIND_START as its test payload: the collar probe only has to
+// prove it decoded a frame, and reusing the real command means the bench test
+// exercises the exact bytes Phase 1 will send.
+const uint8_t CMD_MAGIC       = 0xC2;
+const uint8_t CMD_LEN         = 6;
+const uint8_t CMD_FIND_START  = 0x01;
+const uint8_t CMD_FIND_STOP   = 0x02;
+
+// 8 symbols - deliberately the same as a ping, and not a knob to raise.
+//
+// Measured on the bench (docs/plans/find-mode-bench-findings.md §3): a collar
+// whose RegPreambleLsb is 8 decodes a command with an 8-symbol preamble (3 of 3
+// at -28 dBm) and decodes NOTHING at 16, 24 or 32 (0 of 12). The receiver
+// expects the sync word at the symbol its own preamble register names, so a
+// longer preamble never locks - and the symptom is indistinguishable from a
+// transmitter that is not radiating. A long preamble is therefore not cheap
+// insurance, it is a silent failure.
+//
+// It is also unnecessary: the measured turnaround is ~4 ms (packet complete to
+// carrier up), so a 100 ms collar window catches a command whose 8-symbol
+// preamble ends ~37 ms after TxDone. `t <id> <min> <preamble>` still exposes the
+// knob for re-testing, but do not change this default without re-running that
+// test.
+const uint16_t CMD_PREAMBLE   = 8;
+
+uint8_t cmdSeq = 0;
+
+// Bench auto-reply: answer a ping from `autoId` with a command, automatically,
+// so the turnaround can be measured without a human pressing a key. -1 disarms.
+int8_t  autoId      = -1;
+uint8_t autoLeft    = 0;
+uint8_t autoMinutes = 15;
 
 // ---------------------------------------------------------------------------
 // Roster published to the phone
@@ -101,6 +154,11 @@ const uint8_t ROSTER_FLAG_HAVE     = 0x01;
 const uint8_t ROSTER_FLAG_FRESH    = 0x02;
 const uint8_t ROSTER_FLAG_STALE    = 0x04;
 const uint8_t ROSTER_FLAG_LOW_BATT = 0x08;
+// Bits 4-5 are free: the byte only ever used 0-3, in both the firmware and the
+// app's decoder. This is how find state reaches the phone without a second
+// characteristic and without breaking the 20-byte limit.
+const uint8_t ROSTER_FLAG_FIND_REQ    = 0x10;
+const uint8_t ROSTER_FLAG_FIND_ACTIVE = 0x20;
 
 // ---- Signal quality ----
 // The RSSI published to the phone is the reading for the last packet heard,
@@ -119,7 +177,10 @@ const uint8_t ROSTER_FLAG_LOW_BATT = 0x08;
 //
 // Must comfortably exceed one collar ping interval, or a couple of missed
 // packets trip "signal lost" while the collar is perfectly fine.
-const uint32_t STALE_MS = 15000;
+// 2.5x the collar's slow interval, so one missed ping does not mark a healthy
+// cat lost. (Was 15 s when the collar pinged every 8 s; at a 60 s slow
+// interval it has to move with it, exactly like COLLAR_PING_MS.)
+const uint32_t STALE_MS = (COLLAR_SLOW_MS * 5) / 2;
 
 // The collar's transmit interval (PING_INTERVAL_MS in collar/collar.ino).
 // RadioLib's receive() blocks until a preamble arrives or the timeout
@@ -145,8 +206,12 @@ const uint32_t STALE_MS = 15000;
 // 11000 covers 10 s nominal + 1 s of oscillator drift. receive() returns as soon
 // as a preamble arrives, so a longer window costs nothing in latency. STALE_MS
 // below stays above the worst case (13 s), which is why it does not need to move.
-const uint32_t COLLAR_PING_MS = 8000 + (MAX_COLLARS - 1) * 1000 + 1000;
-const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;   // 11200 ms
+// SLOW_INTERVAL_S in collar/collar.ino. This is the collar's SLOW period, i.e.
+// its worst case: find mode only makes it ping faster, and faster is always
+// inside this window. It must be kept in step with the collar build or the
+// handheld spends most of every slow interval deaf.
+const uint32_t COLLAR_PING_MS = COLLAR_SLOW_MS + (MAX_COLLARS - 1) * 1000 + 1000;
+const uint32_t RX_TIMEOUT_MS  = COLLAR_PING_MS + 200;   // 63200 ms
 
 // ---- BLE ----
 #define SERVICE_UUID "8e7a1b20-3f4d-4c8e-9a1f-2b6d5e4c3a21"
@@ -177,7 +242,9 @@ struct CollarState {
   uint8_t  seq;             // last seq seen, for the missed-packet counter
   bool     seqValid;
   uint8_t  batteryPct;      // 255 = unknown
-  uint8_t  flags;           // bit0 LOW_BATT, carried from the collar
+  uint8_t  flags;           // bit0 LOW_BATT, bit1 FIND, carried from the collar
+  bool     findActive;      // collar says it is in find mode (byte 4 bit 1)
+  uint8_t  findMinutes;     // minutes left, from byte 5 (0 when not in find)
   float    rssiLast;        // RSSI of this collar's last packet, dBm
   float    snrLast;         // SNR of this collar's last packet, dB
   uint32_t lastMs;
@@ -185,6 +252,25 @@ struct CollarState {
   uint32_t missed;          // seq gaps: packets we never heard
 };
 CollarState collars[MAX_COLLARS];
+
+// ---------------------------------------------------------------------------
+// Find requests, per collar (Phase 1)
+// ---------------------------------------------------------------------------
+// The command cannot be transmitted whenever we feel like it: it only has a
+// chance of being heard in the short window that opens when the collar finishes
+// its ping, and the collar only listens then. So a request is a flag that the
+// packet handler turns into a transmission on the next ping from that collar.
+//
+// The acknowledgement is the next ping: it carries FIND_ACTIVE for a start, or
+// stops carrying it for a stop. No separate ack frame.
+const uint8_t FIND_REQ_NONE  = 0;
+const uint8_t FIND_REQ_START = 1;
+const uint8_t FIND_REQ_STOP  = 2;
+
+uint8_t  findRequest[MAX_COLLARS];   // FIND_REQ_*
+uint8_t  findMinutes[MAX_COLLARS];   // duration asked for
+uint8_t  findTries[MAX_COLLARS];     // attempts used on the current request
+uint32_t findSent = 0, findAcked = 0, findFailed = 0;
 
 // Guards the collar state and the roster build. The keep-alive task builds a
 // roster too, so without this it could read a half-updated entry.
@@ -248,6 +334,7 @@ int8_t applyPacket(const uint8_t* buf, size_t len, float rssi, float snr) {
     if (!parseLegacy(buf, len, &batt)) return -1;
     id = 0;
     flags = 0;
+    /* no find information in a legacy ASCII frame */
   }
 
   CollarState& c = collars[id];
@@ -275,6 +362,11 @@ int8_t applyPacket(const uint8_t* buf, size_t len, float rssi, float snr) {
 
   c.batteryPct = batt;
   c.flags = flags;
+  // Byte 5 was reserved and is now "minutes of find mode left"; a pre-find
+  // collar writes 0 there, which reads as "not in find mode" - the same thing
+  // bit 0 of FLAG_FIND says, so the two never disagree in practice.
+  c.findActive = (flags & FRAME_FLAG_FIND) != 0;
+  c.findMinutes = c.findActive ? (uint8_t)((len >= FRAME_LEN) ? buf[5] : 0) : 0;
   c.snrLast = snr;
   c.rssiLast = rssi;
   c.lastMs = millis();
@@ -317,6 +409,8 @@ uint8_t buildRoster(uint8_t* out, int8_t freshId) {
       if ((int8_t)i == freshId) flags |= ROSTER_FLAG_FRESH;
       if (now - c.lastMs > STALE_MS) flags |= ROSTER_FLAG_STALE;
       if (c.flags & FRAME_FLAG_LOW_BATT) flags |= ROSTER_FLAG_LOW_BATT;
+      if (c.flags & FRAME_FLAG_FIND)     flags |= ROSTER_FLAG_FIND_ACTIVE;
+      if (findRequest[i])               flags |= ROSTER_FLAG_FIND_REQ;
     }
 
     *p++ = flags;
@@ -502,6 +596,148 @@ bool initRadio() {
   return true;
 }
 
+// Transmit one command frame. Returns true when TxDone was observed.
+//
+// Callers may use this from the packet path, so it must stay cheap until the
+// moment the carrier starts: RadioLib's transmit() does standby, FIFO write and
+// key-up itself, and nothing here should sit in front of it.
+bool sendCommand(uint8_t id, uint8_t cmd, uint8_t param, uint16_t preamble = CMD_PREAMBLE) {
+  uint8_t frame[CMD_LEN] = { CMD_MAGIC, id, cmd, param, ++cmdSeq, 0x00 };
+  radio.setPreambleLength(preamble);
+  int16_t state = radio.transmit(frame, CMD_LEN);
+  radio.setPreambleLength(PREAMBLE);
+  return state == RADIOLIB_ERR_NONE;
+}
+
+// ---------------------------------------------------------------------------
+// Bench serial commands (Phase 0a)
+// ---------------------------------------------------------------------------
+//   t <id> [min]   send one command frame now, without waiting for a ping
+//   a <id> [n]     answer the next n pings from <id> with a command (n=5)
+//   a              disarm auto-reply
+//   v              toggle verbose logging (single key, no newline needed)
+//
+// Both a newline and a 150 ms gap end a line, because tools/serial_cmd.py sends
+// its argument with no terminator at all - it was written for single-keypress
+// commands. Without the gap rule `t 2` would sit in the buffer forever.
+//
+// The replies here are printed unconditionally, unlike everything else in this
+// sketch: they only exist because a host typed something, so there is by
+// definition a host to read them.
+const uint8_t CMD_LINE_MAX = 24;
+char     cmdLine[CMD_LINE_MAX];
+uint8_t  cmdLineLen = 0;
+uint32_t lastSerialByteMs = 0;
+
+void handleSerialLine(char* line) {
+  while (*line == ' ') line++;
+  if (*line == '\0') return;
+
+  // The verb is a whole word, not a single character: "find 2 15" used to be
+  // parsed as verb 'f' with the argument taken from "ind 2 15", which strtol
+  // reads as 0 - i.e. every find request silently went to collar 0.
+  char* p = line;
+  while (*p && *p != ' ') p++;
+  if (*p) { *p = '\0'; p++; }
+  const char* verb = line;
+  char* rest = p;
+
+  while (*rest == ' ') rest++;
+  int32_t a = 0;
+  bool haveA = false;
+  if (*rest) { haveA = true; a = strtol(rest, &rest, 10); }
+  while (*rest == ' ') rest++;
+  int32_t b = 0;
+  if (*rest) b = strtol(rest, &rest, 10);
+  while (*rest == ' ') rest++;
+  int32_t c = 0;
+  if (*rest) c = strtol(rest, &rest, 10);
+
+  if (strcmp(verb, "v") == 0) {
+    verboseLog = !verboseLog;
+    if (verboseLog) { printBanner(); printCollars(); }
+    return;
+  }
+
+  if (strcmp(verb, "find") == 0) {
+    if (!haveA || a < 0 || a >= MAX_COLLARS) {
+      Serial.println(F("[cmd] find <id> [min] - id must be 0..2"));
+      return;
+    }
+    findRequest[a] = FIND_REQ_START;
+    findMinutes[a] = (b > 0 && b < 256) ? (uint8_t)b : 15;
+    findTries[a] = 0;
+    Serial.print(F("[cmd] find id="));
+    Serial.print(a);
+    Serial.print(F(" for "));
+    Serial.print((int)findMinutes[a]);
+    Serial.println(F(" min - sent in the window after the next ping"));
+    return;
+  }
+
+  if (strcmp(verb, "stop") == 0) {
+    if (!haveA || a < 0 || a >= MAX_COLLARS) {
+      Serial.println(F("[cmd] stop <id> - id must be 0..2"));
+      return;
+    }
+    findRequest[a] = FIND_REQ_STOP;
+    findTries[a] = 0;
+    Serial.print(F("[cmd] stop id="));
+    Serial.print(a);
+    Serial.println(F(" - sent in the window after the next ping"));
+    return;
+  }
+
+  if (strcmp(verb, "t") == 0) {
+    if (!haveA || a < 0 || a >= MAX_COLLARS) {
+      Serial.println(F("[cmd] t <id> [min] [preamble] - id must be 0..2"));
+      return;
+    }
+    uint8_t minutes = (b > 0 && b < 256) ? (uint8_t)b : 15;
+    // Optional third argument: preamble symbols. Being able to A/B this without
+    // a reflash is what tells "the collar cannot decode a 32-symbol preamble"
+    // apart from "the collar cannot hear this transmitter at all".
+    uint16_t preamble = (c > 0 && c <= 255) ? (uint16_t)c : CMD_PREAMBLE;
+    uint32_t t0 = micros();
+    bool ok = sendCommand((uint8_t)a, CMD_FIND_START, minutes, preamble);
+    uint32_t dt = micros() - t0;
+    Serial.print(F("[cmd] t id="));
+    Serial.print(a);
+    Serial.print(F(" min="));
+    Serial.print(minutes);
+    Serial.print(F(" seq="));
+    Serial.print(cmdSeq);
+    Serial.print(F(" pre="));
+    Serial.print(preamble);
+    Serial.print(F(" air="));
+    Serial.print((float)dt / 1000.0f, 1);
+    Serial.println(ok ? F("ms ok") : F("ms TIMEOUT"));
+    return;
+  }
+
+  if (strcmp(verb, "a") == 0) {
+    // 'a' with no number disarms, which is why the presence of the argument is
+    // tracked separately: 0 is a perfectly good collar id.
+    if (!haveA || a < 0 || a >= MAX_COLLARS) {
+      autoId = -1;
+      autoLeft = 0;
+      Serial.println(F("[cmd] auto-reply OFF"));
+      return;
+    }
+    autoId = (int8_t)a;
+    autoLeft = (b > 0 && b < 256) ? (uint8_t)b : 5;
+    autoMinutes = 15;
+    Serial.print(F("[cmd] auto-reply ON for id "));
+    Serial.print((int)autoId);
+    Serial.print(F(", "));
+    Serial.print((int)autoLeft);
+    Serial.println(F(" pings. 'a' alone disarms."));
+    return;
+  }
+
+  Serial.println(F("[cmd] unknown - 'find <id> [min]', 'stop <id>', 't <id> [min] [pre]', 'a <id> [n]', 'v'"));
+}
+
 void printBanner() {
   Serial.println();
   Serial.println(F("====================================="));
@@ -555,6 +791,15 @@ void printCollars() {
       Serial.print(c.batteryPct);
       Serial.print(F("%"));
     }
+    if (findRequest[i] == FIND_REQ_START) {
+      Serial.print(F("  find: requested"));
+    } else if (findRequest[i] == FIND_REQ_STOP) {
+      Serial.print(F("  find: stop requested"));
+    } else if (c.findActive) {
+      Serial.print(F("  find: active "));
+      Serial.print(c.findMinutes);
+      Serial.print(F("min"));
+    }
     Serial.println();
   }
   if (unknownIdCount) {
@@ -602,20 +847,88 @@ void loop() {
 
   // Serial commands are read even with logging off, so a host can still turn
   // diagnostics on over a USB cable that is otherwise only supplying power.
+  //
+  // 'v' is a single keypress (unchanged), and lines are ended either by a
+  // newline or by a 150 ms gap - see the note above handleSerialLine().
   while (Serial.available()) {
     char c = (char)Serial.read();
-    if (c == 'v' || c == 'V') {
+    lastSerialByteMs = millis();
+    if (c == '\r' || c == '\n') {
+      if (cmdLineLen > 0) {
+        cmdLine[cmdLineLen] = '\0';
+        cmdLineLen = 0;
+        handleSerialLine(cmdLine);
+      }
+    } else if (c == 'v' || c == 'V') {
       verboseLog = !verboseLog;
       if (verboseLog) {
         printBanner();
         printCollars();
       }
+    } else if (cmdLineLen < CMD_LINE_MAX - 1) {
+      cmdLine[cmdLineLen++] = c;
+    }
+  }
+  if (cmdLineLen > 0 && millis() - lastSerialByteMs > 150) {
+    cmdLine[cmdLineLen] = '\0';
+    cmdLineLen = 0;
+    handleSerialLine(cmdLine);
+  }
+
+  // -------------------------------------------------------------------------
+  // Armed receive, polled - not radio.receive(data, len, timeout)
+  // -------------------------------------------------------------------------
+  // Two reasons this is not the old blocking call:
+  //
+  // 1. That three-argument receive() does not exist in any released RadioLib
+  //    (checked 3.5 through 8.0: upstream offers receive(data, len) only), so
+  //    this sketch could not be built from this tree at all.
+  // 2. A blocking window is exactly what has to go once the collar slows down:
+  //    at a 60 s ping the loop would sit inside receive() for a minute, unable
+  //    to service a serial command or the LED.
+  //
+  // startReceive() arms RX continuous and returns. DIO0 is wired to this board
+  // (PIN_DIO0) and RadioLib maps it to RxDone, so polling it costs one GPIO
+  // read and adds about 1 ms of latency - well inside the collar's 100 ms
+  // listen window. The deadline keeps the old RX_TIMEOUT_MS meaning: one slow
+  // interval plus margin, so a ping landing on the edge is not missed.
+  static bool     rxArmed    = false;
+  static uint32_t rxDeadline = 0;
+
+  if (!rxArmed) {
+    int16_t armed = radio.startReceive();
+    if (armed == RADIOLIB_ERR_NONE) {
+      rxArmed = true;
+      rxDeadline = millis() + RX_TIMEOUT_MS;
+    } else if (verboseLog) {
+      Serial.print(F("[!] startReceive failed "));
+      Serial.println(armed);
     }
   }
 
-  int16_t state = radio.receive(rxBuf, sizeof(rxBuf), RX_TIMEOUT_MS);
+  bool gotPacket = false;
+  if (rxArmed) {
+    if (digitalRead(PIN_DIO0) == HIGH) {
+      gotPacket = true;
+      rxArmed = false;
+    } else if ((int32_t)(millis() - rxDeadline) >= 0) {
+      rxArmed = false;
+      // Let the phone know we are still alive but the signal has gone stale.
+      publishRoster(-1);
+    } else {
+      // One millisecond is the whole cost of this loop: the CPU stays in idle
+      // between polls instead of spinning, and the collar still has 99 ms of
+      // its window left when the packet is in.
+      delay(1);
+    }
+  }
 
-  if (state == RADIOLIB_ERR_NONE) {
+  if (gotPacket) {
+    // The instant the packet is complete. The collar's listen window opens at
+    // the same moment (its TxDone), so everything between here and the command
+    // going on air is spent out of that window.
+    uint32_t rxReturnUs = micros();
+
     float rssi = radio.getRSSI();
     // Read SNR immediately after the RSSI, before anything else touches the
     // demodulator.
@@ -623,14 +936,94 @@ void loop() {
 
     // RadioLib does not report the payload length through receive(), but the
     // modem does know it - and without the length the tail of the buffer
-    // still holds bytes from an earlier, longer packet.
+    // still holds bytes from an earlier, longer packet. Against the armed
+    // receive the order matters: getPacketLength() BEFORE readData(), because
+    // readData() clears the register once it has consumed the packet.
     size_t len = radio.getPacketLength();
     if (len > sizeof(rxBuf)) len = sizeof(rxBuf);
+
+    int16_t readState = radio.readData(rxBuf, len);
+    if (readState != RADIOLIB_ERR_NONE) {
+      if (verboseLog) {
+        Serial.print(F("[!] readData error "));
+        Serial.println(readState);
+      }
+      len = 0;   // a CRC failure must not be parsed as a cat
+    }
 
     int8_t id;
     portENTER_CRITICAL(&stateMux);
     id = applyPacket(rxBuf, len, rssi, snr);
     portEXIT_CRITICAL(&stateMux);
+
+    // ---- Phase 0a / Phase 1: answer the ping as fast as possible ----
+    //
+    // This deliberately sits BEFORE publishRoster(), the LED and the packet
+    // log. A BLE notify is the most expensive thing in this loop and the
+    // collar is listening with a 100 ms window; the ordering is the whole
+    // point of the measurement, so do not "tidy" it downwards.
+    if (id >= 0 && autoId == id && autoLeft > 0) {
+      uint32_t setupUs = micros() - rxReturnUs;
+      autoLeft--;
+      bool ok = sendCommand((uint8_t)id, CMD_FIND_START, autoMinutes);
+      uint32_t totalUs = micros() - rxReturnUs;
+
+      // Printed unconditionally: a reply to a typed command cannot wedge a
+      // board nobody is listening to, because nobody typed it.
+      Serial.print(F("[auto] id="));
+      Serial.print((int)id);
+      Serial.print(F(" setup="));
+      Serial.print((float)setupUs / 1000.0f, 2);
+      // to_txdone, not to_key: RadioLib's transmit() returns at TxDone, so this
+      // is packet-complete to *end* of the command. Subtract the command's own
+      // airtime (238.6 ms with a 32-symbol preamble at SF9) to get the key-up
+      // delay, which is the number the collar's listen window has to cover.
+      Serial.print(F("ms to_txdone="));
+      Serial.print((float)totalUs / 1000.0f, 2);
+      Serial.print(F("ms seq="));
+      Serial.print(cmdSeq);
+      Serial.print(F(" left="));
+      Serial.print((int)autoLeft);
+      Serial.println(ok ? F(" ok") : F(" TIMEOUT"));
+    }
+
+    // ---- Find mode: deliver the request, and take the ack from the ping ----
+    // A ping that agrees with the request is the acknowledgement: FIND_ACTIVE
+    // set for a start, clear for a stop. Retry on up to 3 pings, then give up
+    // and say so, because "silently never worked" is the worst failure mode
+    // here - the owner is out looking for a cat.
+    if (id >= 0 && findRequest[id] != FIND_REQ_NONE) {
+      const bool wantActive = (findRequest[id] == FIND_REQ_START);
+      if (collars[id].findActive == wantActive) {
+        findRequest[id] = FIND_REQ_NONE;
+        findTries[id] = 0;
+        findAcked++;
+        Serial.print(F("[find] acked id="));
+        Serial.print((int)id);
+        Serial.print(wantActive ? F(" active, ") : F(" stopped, "));
+        Serial.print((int)collars[id].findMinutes);
+        Serial.println(F(" min left"));
+      } else if (findTries[id] >= 3) {
+        findRequest[id] = FIND_REQ_NONE;
+        findTries[id] = 0;
+        findFailed++;
+        Serial.print(F("[find] FAILED id="));
+        Serial.print((int)id);
+        Serial.println(F(" after 3 attempts"));
+      } else {
+        bool ok = sendCommand((uint8_t)id,
+                              wantActive ? CMD_FIND_START : CMD_FIND_STOP,
+                              wantActive ? findMinutes[id] : 0);
+        findTries[id]++;
+        findSent++;
+        Serial.print(F("[find] sent id="));
+        Serial.print((int)id);
+        Serial.print(wantActive ? F(" START ") : F(" STOP "));
+        Serial.print((int)findTries[id]);
+        Serial.print(F("/3 "));
+        Serial.println(ok ? F("ok") : F("TIMEOUT"));
+      }
+    }
 
     if (id < 0) {
       // Not a packet we understand. Not an error worth shouting about: the
@@ -663,14 +1056,6 @@ void loop() {
         }
         Serial.println();
       }
-    }
-  } else if (state == RADIOLIB_ERR_RX_TIMEOUT) {
-    // Let the phone know we are still alive but the signal has gone stale.
-    publishRoster(-1);
-  } else {
-    if (verboseLog) {
-      Serial.print(F("[!] receive error "));
-      Serial.println(state);
     }
   }
 
