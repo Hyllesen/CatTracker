@@ -72,23 +72,38 @@ id went onto which board that survives a reflashing:
 
 | Collar id | USB serial number | Device id (low / high) | Cat | Enclosure |
 |------------|-------------------|------------------------|-----|-----------|
-| 0 | `43241A318258FA98` | `0x8258FA98` / `0x43241A31` | Chichi | |
+| 0 | `3E31C88249ACB575` | `0x49ACB575` / `0x3E31C882` | Chichi | |
 | 1 | `0D9C35E528ADA721` | `0x28ADA721` / `0x0D9C35E5` | Onanda | |
 | 2 | `E571AD86E7F4EAA1` | `0xE7F4EAA1` / `0xE571AD86` | Chacha | |
 
-The collar-2 board before it was `3E31C88249ACB575` (`0x49ACB575` /
-`0x3E31C882`). It is retired — the replacement was flashed with
-`-DCOLLAR_ID=2` over the UF2 bootloader on 2026-10-30, and the `v` dump read
-back the golden registers and `Pinging every 8.2s (id 2 of 3)`; base 2 was
-receiving it at ~8.3 s cadence within minutes. The retired serial is kept here
-so a board found in a drawer is not mistaken for the one on the cat.
+The board now on Chichi, `3E31C88249ACB575` (`0x49ACB575` /
+`0x3E31C882`), started life as collar 2: it was flashed `-DCOLLAR_ID=2` over
+the UF2 bootloader on 2026-10-30, and the `v` dump read back the golden
+registers and `Pinging every 8.2s (id 2 of 3)`; base 2 was receiving it at
+~8.3 s cadence within minutes. When the original id 0 board,
+`43241A318258FA98` (`0x8258FA98` / `0x43241A31`), rusted through and stopped
+working, this board was reflashed `-DCOLLAR_ID=0` over USB CDC on 2026-11-25
+and became Chichi's collar. That build reads back `Pinging every 60s slow /
+2s in find mode (id 0 of 3)`: find mode landed in `7364496`, which moved
+`SLOW_INTERVAL_S` from 8 to 60, so the reflash also put the board on the
+current cadence. A collar still on the 8 s build keeps that cadence until it
+is reflashed — `v` says which one a board has, so check the other two before
+assuming all three agree.
+
+The dead serial is kept in this paragraph rather than in the table so a board
+found in a drawer is not mistaken for the one on the cat. The id 0 rule still
+applies to it: it is dead, but any board flashed to 0 must not run alongside
+`3E31C88249ACB575` — two boards with one id merge into a single row on the
+phone, which looks like one cat walking around twice rather than like a
+mistake.
 
 The USB serial number is what the operating system shows, so it is also what
 `system_profiler SPUSBDataType` prints — no serial port, no firmware, no
 power cycle needed.
 
-The two boards above have both been flashed and verified against the golden
-register values in `collar/README.md`. Collar 1 arrived already running the
+All three rows in the table have been flashed and verified against the golden
+register values in `collar/README.md`; the id 0 board was checked again after
+its 2026-11-25 reflash. Collar 1 arrived already running the
 old single-collar firmware (ASCII payload, hardcoded `CAT-01`), so it was
 flashed over USB CDC to move it onto the binary frame; the reflash preserved
 the radio settings, and the register dump after it was identical to the dump

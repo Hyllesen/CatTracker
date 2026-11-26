@@ -54,7 +54,11 @@ number and ignore the function label.
 - **Never enable unconditional `Serial.print` on either board.** Serial is
   native USB CDC; powering from a charger or power bank means nothing drains
   it, so the write blocks and silently stops the board. Logging defaults off and
-  is enabled by sending `v`. See `collar/README.md`.
+  is enabled by sending `v`. **A board that has been debugged must be put back to
+  logging off with `w` before the cable is closed or it goes back on a cat** —
+  `w` forces the state, while `v` toggles. A collar left printing with the cable
+  still attached is the same failure as an ungated print, and looks exactly like
+  a dead collar. See `collar/README.md`.
 - **In the handheld, every print is gated on `hostAttached()`, which is
   `Serial.isPlugged()`.** That turns the rule above from a habit into a
   structure: a board with no cable has no Host, prints nothing, and cannot wedge.
@@ -223,6 +227,16 @@ number and ignore the function label.
   screen. `__tests__/app_roster.test.tsx` drives the whole path - mocked
   BLE, real roster bytes, press Connect, press a row - so a change to what
   the app shows is caught by a test rather than by eye.
+- **The app's dead-link watchdog counts every roster notification, not collar
+  packets.** The handheld keep-alives every 2 s (`KEEPALIVE_MS`), while a
+  collar's slow interval is 60 s (`SLOW_INTERVAL_S`). `STALL_RECONNECT_MS` in
+  `App.tsx` must therefore read the clock set at the top of `onRoster`, before
+  the `fresh` early return - keying it off fresh packets disconnects a healthy
+  link 25 s after each beacon, which presents as "the app drops when no cat has
+  pinged". The watchdog must also actually rescan: the first version only
+  disconnected, left `subRef` set so Connect was ignored, and sat on a spinner.
+  `__tests__/app_roster.test.tsx` covers both halves (keep-alives keep it up; a
+  fully silent link scans again).
 - **`arduino-cli upload` to a collar can fail with "Target is not in DFU
   mode" and succeed on the second run.** The reset into the bootloader is a
   1200-bps touch and it is asynchronous; the first attempt can get there

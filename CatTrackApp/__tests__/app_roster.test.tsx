@@ -53,6 +53,10 @@ function rosterBytes(entries: Array<{
 // Jest only lets a mock factory reference variables whose names start with
 // 'mock'.
 let mockRoster: number[] = [];
+// The notify callback the app registered, so a test can send another roster
+// the way the handheld's keep-alive task does. Null before connecting.
+let mockNotify: ((error: unknown, characteristic: unknown) => void) | null =
+  null;
 
 jest.mock('react-native-ble-plx', () => {
   const State = {PoweredOn: 'PoweredOn'};
@@ -74,6 +78,7 @@ jest.mock('react-native-ble-plx', () => {
       value: '',
     })),
     monitorCharacteristicForService: jest.fn(async (_s: any, _c: any, cb: any) => {
+      mockNotify = cb;
       setTimeout(() => cb(null, {value: value()}), 10);
       return {remove: jest.fn()};
     }),
@@ -82,6 +87,12 @@ jest.mock('react-native-ble-plx', () => {
   return {
     State,
     __connected: connected,
+    // Send one more notification, which is what the handheld does every two
+    // seconds whether or not a collar has pinged.
+    __push: (bytes: number[]) => {
+      mockRoster = bytes;
+      mockNotify?.(null, {value: value()});
+    },
     BleManager: jest.fn(() => ({
       state: jest.fn(async () => State.PoweredOn),
       startDeviceScan: jest.fn(async (_f: any, _o: any, cb: any) => cb(null, connected)),
@@ -158,10 +169,15 @@ async function press(tree: ReactTestRenderer.ReactTestRenderer, label: string) {
 
 beforeEach(() => {
   jest.useFakeTimers();
+  mockNotify = null;
   // The mocked device outlives each test, so its call list would otherwise
   // carry the previous test's writes and "the first write" would be a lie.
-  require('react-native-ble-plx').__connected
-    .writeCharacteristicWithResponseForService.mockClear();
+  const device = require('react-native-ble-plx').__connected;
+  device.writeCharacteristicWithResponseForService.mockClear();
+  device.cancelConnection.mockClear();
+  // The manager is constructed once when ble.ts is imported, so its scan call
+  // list survives into the next test unless it is cleared here.
+  require('react-native-ble-plx').BleManager.mock.results[0].value.startDeviceScan.mockClear();
 });
 
 afterEach(() => {
@@ -338,6 +354,76 @@ test('a collar that reports find active can be stopped from its row', async () =
     device.writeCharacteristicWithResponseForService as jest.Mock
   ).mock.calls[0];
   expect(Array.from(Buffer.from(payload, 'base64'))).toEqual([1, 0x02, 0]);
+
+  await ReactTestRenderer.act(async () => {
+    tree.unmount();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Link lifetime
+// ---------------------------------------------------------------------------
+// The handheld notifies every two seconds even with nothing on the air, while
+// a collar's slow interval is a minute. The app's dead-link watchdog therefore
+// has to count notifications, not collar packets: keying it off FRESH packets
+// disconnected a healthy link 25 s after every beacon, which is exactly the
+// "it drops when no collar is pinging" report.
+
+test('keep-alives keep the link up when no collar pings', async () => {
+  mockRoster = rosterBytes([
+    {have: true, fresh: true, rssi: -25.4, snr: 12, age: 1, battery: 95},
+    {have: false},
+    {have: false},
+  ]);
+  const tree = await connect();
+
+  // Two minutes of the handheld's own cadence, carrying the last reading but
+  // no fresh packet - the cold-collars case that used to trip the watchdog.
+  const keepAlive = rosterBytes([
+    {have: true, fresh: false, rssi: -25.4, snr: 12, age: 60, battery: 95},
+    {have: false},
+    {have: false},
+  ]);
+  for (let i = 0; i < 60; i++) {
+    await ReactTestRenderer.act(async () => {
+      require('react-native-ble-plx').__push(keepAlive);
+      await jest.advanceTimersByTimeAsync(2000);
+    });
+  }
+
+  const device = require('react-native-ble-plx').__connected;
+  expect(device.cancelConnection).not.toHaveBeenCalled();
+  // Still showing the reading, i.e. still connected and 'ready'.
+  expect(textsOf(tree).filter(t => t === '-25.4')).toHaveLength(2);
+
+  await ReactTestRenderer.act(async () => {
+    tree.unmount();
+  });
+});
+
+test('a link that goes completely silent is re-established', async () => {
+  mockRoster = rosterBytes([
+    {have: true, fresh: true, rssi: -50, snr: 9, age: 1, battery: 80},
+    {have: false},
+    {have: false},
+  ]);
+  const tree = await connect();
+
+  const manager = require('react-native-ble-plx').BleManager.mock.results[0]
+    .value;
+  expect(manager.startDeviceScan).toHaveBeenCalledTimes(1);
+
+  // Nothing at all from the handheld: not a keep-alive, not a collar packet.
+  // That is a dead link, and it must be noticed and rebuilt - not left on a
+  // spinner with a Connect button that silently ignores the tap.
+  mockNotify = null;
+  await ReactTestRenderer.act(async () => {
+    // 25 s to notice, then the reconnect's own scan and its 8 s timeout.
+    await jest.advanceTimersByTimeAsync(40000);
+  });
+
+  expect(manager.startDeviceScan).toHaveBeenCalledTimes(2);
+  expect(textsOf(tree).filter(t => t === '-50.0')).toHaveLength(2);
 
   await ReactTestRenderer.act(async () => {
     tree.unmount();

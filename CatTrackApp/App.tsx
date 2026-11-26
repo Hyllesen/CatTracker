@@ -171,12 +171,29 @@ const INTERVAL_SAMPLES = 7;
 /**
  * Silence after which the BLE link is presumed dead and reconnected.
  *
- * Comfortably longer than the handheld's keep-alive (2 s) and longer than the
- * worst expected beacon gap (one interval plus the 200 ms receive margin), so
- * a healthy link never trips this - it only fires when nothing at all has
- * arrived for a long time, which is the signature of a dead connection.
+ * This is measured against ANY roster notification, keep-alive included - not
+ * against a collar packet. The handheld notifies every 2 s whether or not a
+ * cat has pinged, while a collar's slow interval is 60 s (SLOW_INTERVAL_S).
+ * Keying this off FRESH packets instead would disconnect a perfectly healthy
+ * link 25 s after every beacon, which is the bug this constant used to have.
+ *
+ * Twelve missed keep-alives is far beyond jitter, and still short enough that
+ * a real drop is noticed while the user is standing there.
  */
 const STALL_RECONNECT_MS = 25000;
+
+/**
+ * How many scans an automatic reconnect tries before giving up.
+ *
+ * A handheld that was reset or walked out of range takes a moment to
+ * advertise again, and the first scan can start in that gap. Manual Connect
+ * still tries once, so a bad glue code or a phone holding the link reports
+ * its reason immediately rather than after a minute of silence.
+ */
+const RECONNECT_SCANS = 3;
+/** Gap between reconnect scans, so the first one can overlap the handheld's
+ *  own re-advertising rather than racing it. */
+const RECONNECT_GAP_MS = 2000;
 
 function median(values: number[]): number {
   if (values.length === 0) {
@@ -419,38 +436,91 @@ function Tracker() {
   }, []);
   const deviceRef = useRef<Device | null>(null);
   const subRef = useRef<Subscription | null>(null);
+  /**
+   * Bumped whenever a connection attempt starts, and by Disconnect.
+   *
+   * A scan waits eight seconds, so without this a tap on Connect followed by
+   * Disconnect still connects when the scan returns - and the user has to
+   * disconnect twice. Every await in the connect path checks it, and an
+   * attempt that has been overtaken tears its own device down.
+   */
+  const sessionRef = useRef(0);
+  /** True while an automatic reconnect is running, so the watchdog cannot
+   *  start a second one while the first is still scanning. */
+  const reconnectingRef = useRef(false);
+  /**
+   * True between Disconnect and the next connection attempt. A notification
+   * already in flight when the user pressed Disconnect can still reach
+   * onRoster after the subscription was removed; without this it would put
+   * the status back to 'ready' on a link the user just closed.
+   */
+  const stoppedRef = useRef(false);
   // Beacon timing, per collar so each cat's own cadence is measured rather
   // than one average over all of them. Kept in refs so the BLE callback
   // never needs re-binding, and so reading them does not re-render on every
   // packet.
   const timingRef = useRef<Record<number, Timing>>({});
+  /** Last fresh collar packet, for the beep pulse and the cadence display. */
   const lastPacketRef = useRef<number>(0);
+  /**
+   * Last roster notification of any kind, keep-alive included. This is the
+   * liveness clock for the link: 2 s of keep-alive versus a 60 s collar slow
+   * interval, so it is the only one of the two that can tell "the link is
+   * gone" from "no cat has pinged yet".
+   */
+  const lastLinkRef = useRef<number>(0);
   const stallRef = useRef(false);
   // Ticks every 200 ms while connected. It is the clock the countdown reads,
   // so the beacon timer does not depend on when React happens to re-render.
   const [now, setNow] = useState(() => Date.now());
   const [pulse, setPulse] = useState(false);
 
-  const stop = useCallback(async () => {
+  /** Drop the current subscription and device without touching the UI. */
+  const dropLink = useCallback(async () => {
     if (subRef.current) {
-      subRef.current.remove();
+      try {
+        subRef.current.remove();
+      } catch {
+        // Already gone with the link.
+      }
       subRef.current = null;
     }
-    if (deviceRef.current) {
-      await disconnect(deviceRef.current);
-      deviceRef.current = null;
+    const dev = deviceRef.current;
+    deviceRef.current = null;
+    if (dev) {
+      await disconnect(dev);
     }
+  }, []);
+
+  const stop = useCallback(async () => {
+    // Abandon any scan or connect that is still in flight, so a Connect tap
+    // followed by Disconnect does not connect behind the user's back.
+    sessionRef.current += 1;
+    stoppedRef.current = true;
+    await dropLink();
     timingRef.current = {};
     lastPacketRef.current = 0;
+    lastLinkRef.current = 0;
+    stallRef.current = false;
     findActiveSinceRef.current = {};
     setFindReqs({});
     setCollars([]);
     setFocus(null);
     setNow(Date.now());
     setStatus('idle');
-  }, [setFocus]);
+  }, [dropLink, setFocus]);
 
   const onRoster = useCallback((r: Roster) => {
+    if (stoppedRef.current) {
+      // A notification that was already in flight when Disconnect was pressed.
+      return;
+    }
+    // Every notification proves the link is alive, and the handheld sends one
+    // every two seconds even with no collars in range. Take the liveness clock
+    // here, before the fresh-packet early return below, or a quiet collar
+    // looks exactly like a dead connection.
+    lastLinkRef.current = Date.now();
+    stallRef.current = false;
     setCollars(r.collars);
     setStatus('ready');
 
@@ -477,7 +547,6 @@ function Tracker() {
     }
 
     const now = Date.now();
-    stallRef.current = false;
     lastPacketRef.current = now;
 
     for (const c of fresh) {
@@ -517,51 +586,150 @@ function Tracker() {
     setNow(now);
   }, []);
 
-  const start = useCallback(async () => {
-    // Already connected. A connected peripheral stops advertising, so a second
-    // scan cannot find it - and starting a device scan while a GATT client is
-    // live can tear the existing connection down. Ignore the tap instead of
-    // reporting a failure the user can do nothing about.
-    if (subRef.current) {
-      return;
-    }
+  /**
+   * Scan, connect and subscribe, trying `tries` scans before giving up.
+   *
+   * Manual Connect passes 1 so a failure is reported at once. An automatic
+   * reconnect passes RECONNECT_SCANS: a handheld that was reset needs a moment
+   * to advertise again, and the first scan can start in that gap.
+   */
+  const connectOnce = useCallback(
+    async (tries = 1): Promise<boolean> => {
+      const gen = ++sessionRef.current;
+      const overtaken = () => gen !== sessionRef.current;
+      // A new attempt is live again: accept its notifications from here on.
+      stoppedRef.current = false;
 
-    setError(null);
+      setError(null);
 
-    if (!(await isBluetoothEnabled())) {
-      setError('Bluetooth is off. Turn it on and try again.');
-      return;
-    }
-    if (!(await requestPermissions())) {
-      setError('Bluetooth permission is required to find the handheld.');
-      return;
-    }
-
-    try {
-      setStatus('scanning');
-      setSeen([]);
-      const {device, seen: nearby} = await scanForHandheld();
-      setSeen(nearby);
-
-      if (!device) {
-        setError(
-          nearby.length === 0
-            ? 'No BLE devices seen at all. Bluetooth permission is the usual cause.'
-            : `Saw ${nearby.length} device(s), none named CatTracker. ` +
-              'Is another phone still connected to it?',
-        );
-        setStatus('idle');
-        return;
+      if (!(await isBluetoothEnabled())) {
+        if (overtaken()) {
+          return false;
+        }
+        setError('Bluetooth is off. Turn it on and try again.');
+        setStatus('error');
+        return false;
+      }
+      if (!(await requestPermissions())) {
+        if (overtaken()) {
+          return false;
+        }
+        setError('Bluetooth permission is required to find the handheld.');
+        setStatus('error');
+        return false;
       }
 
-      setStatus('connecting');
-      deviceRef.current = device;
-      subRef.current = await connectAndSubscribe(device, onRoster);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setStatus('error');
+      for (let attempt = 0; attempt < tries; attempt++) {
+        if (overtaken()) {
+          return false;
+        }
+        if (attempt > 0) {
+          await new Promise(res => setTimeout(res, RECONNECT_GAP_MS));
+          if (overtaken()) {
+            return false;
+          }
+        }
+
+        try {
+          setStatus('scanning');
+          setSeen([]);
+          const {device, seen: nearby} = await scanForHandheld();
+          if (overtaken()) {
+            return false;
+          }
+          setSeen(nearby);
+
+          if (!device) {
+            // Try again only if this was an automatic reconnect and there are
+            // scans left; otherwise this is the failure to report.
+            if (attempt + 1 < tries) {
+              continue;
+            }
+            setError(
+              nearby.length === 0
+                ? 'No BLE devices seen at all. Bluetooth permission is the usual cause.'
+                : `Saw ${nearby.length} device(s), none named CatTracker. ` +
+                  'Is another phone still connected to it?',
+            );
+            setStatus('idle');
+            return false;
+          }
+
+          setStatus('connecting');
+          deviceRef.current = device;
+          const subscription = await connectAndSubscribe(device, onRoster);
+
+          if (overtaken()) {
+            // Disconnect landed while we were connecting. Undo it rather than
+            // leaving the user attached to a link they asked to drop.
+            try {
+              subscription.remove();
+            } catch {
+              // Nothing to release.
+            }
+            deviceRef.current = null;
+            await disconnect(device);
+            return false;
+          }
+
+          subRef.current = subscription;
+          // Start the liveness clock now as well as on the first notification,
+          // so a handheld that connects and then goes silent is still noticed.
+          lastLinkRef.current = Date.now();
+          stallRef.current = false;
+          setStatus('ready');
+          return true;
+        } catch (e) {
+          if (overtaken()) {
+            return false;
+          }
+          setError(e instanceof Error ? e.message : String(e));
+          setStatus('error');
+          const dev = deviceRef.current;
+          deviceRef.current = null;
+          if (dev) {
+            await disconnect(dev);
+          }
+          return false;
+        }
+      }
+      return false;
+    },
+    [onRoster],
+  );
+
+  const start = useCallback(async () => {
+    // Already connected, or an automatic reconnect is already scanning. A
+    // connected peripheral stops advertising, so a second scan cannot find it -
+    // and starting a device scan while a GATT client is live can tear the
+    // existing connection down. Ignore the tap instead of reporting a failure
+    // the user can do nothing about.
+    if (subRef.current || reconnectingRef.current) {
+      return;
     }
-  }, [onRoster]);
+    await connectOnce();
+  }, [connectOnce]);
+
+  /**
+   * Put a dead link back together.
+   *
+   * The old watchdog only disconnected: it cleared the device, left the
+   * subscription ref set so Connect was ignored, and sat on a spinner. That
+   * made every false positive permanent. Tear down first, then scan, so the
+   * peripheral is advertising by the time we look for it.
+   */
+  const reconnect = useCallback(async () => {
+    if (reconnectingRef.current) {
+      return;
+    }
+    reconnectingRef.current = true;
+    try {
+      await dropLink();
+      await connectOnce(RECONNECT_SCANS);
+    } finally {
+      reconnectingRef.current = false;
+    }
+  }, [connectOnce, dropLink]);
 
   useEffect(() => {
     prepareTones();
@@ -587,24 +755,24 @@ function Tracker() {
       // Stall detection. A BLE link that dies quietly leaves the phone
       // believing it is still connected, so without this the app sits on a
       // frozen last reading forever and the user has to reconnect by hand.
-      // The keep-alive on the handheld makes the link survive, but not every
+      // The handheld's keep-alive (2 s) makes the link survive, but not every
       // drop is preventable, so notice this one and recover.
       //
-      // Only counts silence with no fresh packet from ANY collar, and only
-      // once per episode - reconnecting sets status back to 'connecting',
-      // which stops this.
+      // The clock is the last notification of ANY kind - a fresh collar packet
+      // updates it too, but so does a keep-alive. Using only fresh packets here
+      // disconnected a healthy link 25 s after each 60 s beacon, which is why a
+      // quiet collar used to look like a dead handheld.
+      //
+      // Only once per episode - reconnecting sets status away from 'ready',
+      // which stops this ticker, and a new link resets the flag.
       if (
-        lastPacketRef.current > 0 &&
-        now - lastPacketRef.current > STALL_RECONNECT_MS &&
+        lastLinkRef.current > 0 &&
+        now - lastLinkRef.current > STALL_RECONNECT_MS &&
         !stallRef.current
       ) {
         stallRef.current = true;
         setStatus('connecting');
-        const dev = deviceRef.current;
-        deviceRef.current = null;
-        if (dev) {
-          disconnect(dev);
-        }
+        void reconnect();
       }
       setNow(now);
       setPulse(p => {
@@ -616,7 +784,7 @@ function Tracker() {
       });
     }, 200);
     return () => clearInterval(id);
-  }, [status]);
+  }, [status, reconnect]);
 
   const openRename = useCallback(
     (id: number) => {

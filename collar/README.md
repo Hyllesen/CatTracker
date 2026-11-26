@@ -446,6 +446,14 @@ Attach a cable, press `v`, and diagnostics appear. Press `v` again to silence.
 The collar additionally requires `TinyUSBDevice.mounted()` before it writes
 anything, since it normally runs with no USB attached at all.
 
+**When the debug session is over, send `w` before you close the port or walk
+away.** `w` forces logging off, so it is safe to send without knowing the
+current state; `v` toggles, and pressing it twice from the wrong starting state
+leaves logging on. A collar that is left with logging on and a cable still
+attached is the failure described above: it prints to a host that is not
+reading, fills the CDC buffer, and stops beaconing. Debugging a board is not
+finished until `w` has been sent and the `[TX]` lines stop.
+
 **For any enclosure or field build, never re-enable unconditional printing.**
 
 ## Battery
@@ -693,8 +701,10 @@ proves the whole chain — radio, air settings and frame — and it is worth
 doing before the board goes into an enclosure, because a board that has to
 come open again means a new set of solder joints.
 
-**8. Turn the logging back off** with `v`. The collar is silent by design;
-see "Serial logging is off by default" for why that matters in the field.
+**8. Turn the logging back off** with `w` (not `v` — `w` forces it off, so it
+does not matter whether logging is currently on or off). The collar is silent
+by design; see "Serial logging is off by default" for why that matters in the
+field, and do this before the cable is closed.
 
 ## Flashing
 
